@@ -217,12 +217,21 @@ test("chrome launches in a separate profile and stays visible", () => {
   const args = chromeLaunchArgs(
     "C:\\Users\\ada\\AppData\\Roaming\\personal-agents\\chrome-profile",
     9333,
-    "https://example.com/",
   );
   expect(args.some((arg) => arg.includes("chrome-profile"))).toBe(true);
   expect(args.some((arg) => arg.includes("9333"))).toBe(true);
-  expect(args).toContain("https://example.com/");
+  expect(args).toContain("about:blank");
+  expect(args.some((arg) => /^https?:/i.test(arg))).toBe(false);
   expect(args.some((arg) => /headless/i.test(arg))).toBe(false);
+});
+
+test("navigate never hands a URL to the default browser", () => {
+  const source = readFileSync(new URL("./drive.ts", import.meta.url), "utf8");
+  expect(source).not.toMatch(/spawn\(\s*["']open["']/);
+  expect(source).not.toMatch(/NSWorkspace\.shared|ShellExecuteW/);
+  const args = chromeLaunchArgs("/tmp/chrome-profile", 9222);
+  expect(args.at(-1)).toBe("about:blank");
+  expect(args.join("\n")).not.toMatch(/https?:\/\//);
 });
 
 test("a denied navigate, click, or type does not touch the page", async () => {

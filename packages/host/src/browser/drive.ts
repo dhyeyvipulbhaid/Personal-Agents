@@ -157,7 +157,7 @@ export class BrowserDrive {
         ok: false,
         allowed: true,
         url,
-        message: `Chrome did not open ${host}. ${detail}`,
+        message: `Chrome did not start, so ${host} was not opened in Safari or any other browser. ${detail}`,
       };
     }
   }
@@ -453,7 +453,7 @@ export class BrowserDrive {
     if (this.options.debuggingBlocked) {
       return "Remote debugging is turned off by policy (RemoteDebuggingAllowed), so Chrome was not started.";
     }
-    return "Chrome is not installed. Install Google Chrome, then try again. Reading a page still works without it.";
+    return "Chrome is not installed, so nothing was opened in Safari or another browser. Install Google Chrome, then try again. Reading a page still works without it.";
   }
 
   private halted(signal?: AbortSignal): boolean {
@@ -524,11 +524,7 @@ export class BrowserDrive {
   }
 }
 
-export function chromeLaunchArgs(
-  userDataDir: string,
-  port: number,
-  url: string,
-): string[] {
+export function chromeLaunchArgs(userDataDir: string, port: number): string[] {
   return [
     `--remote-debugging-port=${port}`,
     "--remote-debugging-address=127.0.0.1",
@@ -536,8 +532,20 @@ export function chromeLaunchArgs(
     "--no-first-run",
     "--no-default-browser-check",
     "--new-window",
-    url,
+    "about:blank",
   ];
+}
+
+function assertChromeBinary(executable: string): void {
+  const base = executable.split(/[\\/]/).pop() ?? "";
+  if (
+    /^(open|xdg-open|start|explorer)$/i.test(base) ||
+    /NSWorkspace|ShellExecute|window\.open/i.test(executable)
+  ) {
+    throw new Error(
+      "Refusing to open a page with the default browser. Install Google Chrome.",
+    );
+  }
 }
 
 export function chromeExecutable(input?: {
@@ -561,11 +569,11 @@ export function chromeExecutable(input?: {
 export async function connectChrome(
   executable: string,
   userDataDir: string,
-  url: string,
 ): Promise<CdpClient> {
+  assertChromeBinary(executable);
   const port = await freePort();
   mkdirSync(userDataDir, { recursive: true });
-  const child = spawn(executable, chromeLaunchArgs(userDataDir, port, url), {
+  const child = spawn(executable, chromeLaunchArgs(userDataDir, port), {
     stdio: "ignore",
     windowsHide: true,
   });
