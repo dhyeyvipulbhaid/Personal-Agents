@@ -26,6 +26,8 @@ fn main() {
             host::audit_log,
             host::approvals,
             host::approval_act,
+            host::browser_activity,
+            host::browser_stop,
             host::revenue_status,
             host::capabilities,
             host::list_models,

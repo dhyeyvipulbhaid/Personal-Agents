@@ -8,6 +8,8 @@ fn main() {
             "audit_log",
             "approvals",
             "approval_act",
+            "browser_activity",
+            "browser_stop",
             "revenue_status",
             "capabilities",
             "list_models",

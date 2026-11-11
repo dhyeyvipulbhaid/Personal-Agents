@@ -11,6 +11,8 @@
     "allow-audit-log",
     "allow-approvals",
     "allow-approval-act",
+    "allow-browser-activity",
+    "allow-browser-stop",
     "allow-revenue-status",
     "allow-capabilities",
     "allow-list-models",
