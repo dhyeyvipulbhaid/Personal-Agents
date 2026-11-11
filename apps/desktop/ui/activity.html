@@ -7,16 +7,18 @@
     <link rel="stylesheet" href="app.css" />
   </head>
   <body>
-    <nav>
-      <a href="index.html">Home</a>
-      <a href="activity.html">Activity</a>
-      <a href="approvals.html">Approvals</a>
-    </nav>
-    <main>
-      <h1>Activity</h1>
-      <ol id="activity"></ol>
-    </main>
+    <div id="shell-root"></div>
+    <template id="page-body">
+      <header class="page-head">
+        <div>
+          <h1 class="page-title">Activity</h1>
+          <p class="lede">Newest decisions and blocked actions first.</p>
+        </div>
+      </header>
+      <ol id="activity" class="ledger"></ol>
+    </template>
     <script src="shortcut.js"></script>
+    <script src="shell.js"></script>
     <script src="activity.js"></script>
   </body>
 </html>

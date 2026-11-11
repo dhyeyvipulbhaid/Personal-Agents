@@ -16,6 +16,7 @@ export type ApprovalItem = {
   summary: string;
   draft: string;
   capability: string;
+  effects: string[];
   status: "pending" | "snoozed";
   snoozeUntil?: number;
 };
@@ -157,6 +158,7 @@ export class Approvals {
           summary: input.summary,
           draft: input.draft,
           capability: input.capability,
+          effects: input.effects ?? [],
           status: "pending",
         },
       });

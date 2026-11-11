@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Builder — Personal Agents</title>
+    <link rel="stylesheet" href="app.css" />
+  </head>
+  <body>
+    <div id="shell-root"></div>
+    <template id="page-body">
+      <header class="page-head">
+        <div>
+          <h1 class="page-title">Builder</h1>
+          <p class="lede">Describe a widget. The app installs a spec, not generated code.</p>
+        </div>
+      </header>
+      <div class="template-grid">
+        <button type="button" data-template="kpi">
+          <strong>Total</strong>
+          Show total revenue as a big number.
+        </button>
+        <button type="button" data-template="table">
+          <strong>Table</strong>
+          Show revenue as a table.
+        </button>
+        <button type="button" data-template="alert">
+          <strong>Alert</strong>
+          Alert when a vertical drops.
+        </button>
+      </div>
+      <form id="builder-form">
+        <label for="builder-prompt">What should the widget show?</label>
+        <textarea id="builder-prompt" name="prompt" placeholder="show total revenue as a big number"></textarea>
+        <div class="button-row">
+          <button type="submit">Draft</button>
+        </div>
+      </form>
+      <ol id="builder-steps" class="steps">
+        <li data-step="draft">Draft</li>
+        <li data-step="generate">Generate</li>
+        <li data-step="check">Check</li>
+        <li data-step="install">Install</li>
+      </ol>
+      <article id="builder-review" class="card" hidden>
+        <h2>Review</h2>
+        <p>Check the preview. It stays in a sandbox until you approve the install.</p>
+        <iframe id="builder-preview" class="widget-frame" sandbox="" title="Widget preview"></iframe>
+        <div class="button-row">
+          <button type="button" id="builder-install">Install</button>
+        </div>
+      </article>
+      <p id="builder-status" class="notice"></p>
+    </template>
+    <script src="shortcut.js"></script>
+    <script src="shell.js"></script>
+    <script src="builder.js"></script>
+  </body>
+</html>

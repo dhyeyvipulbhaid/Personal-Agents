@@ -7,18 +7,23 @@
     <link rel="stylesheet" href="app.css" />
   </head>
   <body>
-    <nav>
-      <a href="index.html">Home</a>
-      <a href="activity.html">Activity</a>
-      <a href="approvals.html">Approvals</a>
-      <a href="chat.html">Chat</a>
-      <a href="capabilities.html">Capabilities</a>
-    </nav>
-    <main>
-      <h1>Capabilities</h1>
-      <ul id="checks"></ul>
-    </main>
+    <div id="shell-root"></div>
+    <template id="page-body">
+      <header class="page-head">
+        <div>
+          <h1 class="page-title">Capabilities</h1>
+          <p class="lede">
+            What each part of the app is allowed to do. You can review a permission
+            here. This version does not add permissions from the page.
+          </p>
+        </div>
+      </header>
+      <div id="plugins" class="cards grid"></div>
+      <h2 class="page-title" style="font-size: 18px; margin-top: 24px">This machine</h2>
+      <ul id="checks" class="plain-list"></ul>
+    </template>
     <script src="shortcut.js"></script>
+    <script src="shell.js"></script>
     <script src="capabilities.js"></script>
   </body>
 </html>

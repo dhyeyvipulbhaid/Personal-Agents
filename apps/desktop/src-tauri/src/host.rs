@@ -27,6 +27,7 @@ pub struct HostHandle {
 
 struct HostInner {
     bin: PathBuf,
+    data_dir: PathBuf,
     log: Mutex<std::fs::File>,
     audit: PathBuf,
     active: Mutex<Option<Active>>,
@@ -62,8 +63,10 @@ impl HostHandle {
                 return Err(err);
             }
         };
+        let data_dir = dir.clone();
         let inner = Arc::new(HostInner {
             bin,
+            data_dir,
             log: Mutex::new(log),
             audit: dir.join("audit.log"),
             active: Mutex::new(None),
@@ -77,6 +80,10 @@ impl HostHandle {
             .spawn(move || supervisor.supervise())
             .map_err(|err| err.to_string())?;
         Ok(Self { inner })
+    }
+
+    fn inner(&self) -> HostHandle {
+        self.clone()
     }
 
     pub fn stop(&self) {
@@ -107,12 +114,24 @@ impl HostHandle {
         method: &str,
         params: serde_json::Value,
     ) -> Result<String, String> {
+        self.call_params_when_ready_timeout(method, params, CALL_TIMEOUT)
+    }
+
+    fn call_params_when_ready_timeout(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+        timeout: Duration,
+    ) -> Result<String, String> {
         let deadline = Instant::now() + READY_TIMEOUT;
         let mut last = "agent host is not running".to_string();
         while Instant::now() < deadline {
-            match self.inner.call_params(method, params.clone()) {
+            match self.inner.call_params_timeout(method, params.clone(), timeout) {
                 Ok(value) => return Ok(value),
                 Err(err) => {
+                    if err == "agent host timed out" {
+                        return Err(err);
+                    }
                     last = err;
                     thread::sleep(Duration::from_millis(50));
                 }
@@ -207,6 +226,214 @@ pub fn note_displayed_host_version(
     host.note_displayed(&version)
 }
 
+const CHAT_TIMEOUT: Duration = Duration::from_secs(120);
+
+async fn call_host(
+    host: tauri::State<'_, HostHandle>,
+    method: &'static str,
+) -> Result<String, String> {
+    let host = host.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || host.call_when_ready(method))
+        .await
+        .map_err(|err| err.to_string())?
+}
+
+async fn call_host_params(
+    host: tauri::State<'_, HostHandle>,
+    method: &'static str,
+    params: serde_json::Value,
+    timeout: Duration,
+) -> Result<String, String> {
+    let host = host.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        host.call_params_when_ready_timeout(method, params, timeout)
+    })
+    .await
+    .map_err(|err| err.to_string())?
+}
+
+#[tauri::command]
+pub async fn revenue_status(host: tauri::State<'_, HostHandle>) -> Result<String, String> {
+    call_host(host, "revenue_status").await
+}
+
+#[tauri::command]
+pub async fn capabilities(host: tauri::State<'_, HostHandle>) -> Result<String, String> {
+    call_host(host, "capabilities").await
+}
+
+#[tauri::command]
+pub async fn list_models(host: tauri::State<'_, HostHandle>) -> Result<String, String> {
+    call_host(host, "list_models").await
+}
+
+#[tauri::command]
+pub async fn set_models(
+    host: tauri::State<'_, HostHandle>,
+    chat: String,
+    agent: String,
+    builder: String,
+) -> Result<String, String> {
+    call_host_params(
+        host,
+        "set_models",
+        serde_json::json!({ "chat": chat, "agent": agent, "builder": builder }),
+        CALL_TIMEOUT,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn chat_state(
+    host: tauri::State<'_, HostHandle>,
+    session_id: Option<String>,
+) -> Result<String, String> {
+    call_host_params(
+        host,
+        "chat_state",
+        serde_json::json!({ "sessionId": session_id.unwrap_or_default() }),
+        CALL_TIMEOUT,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn chat_send(
+    host: tauri::State<'_, HostHandle>,
+    text: String,
+    session_id: Option<String>,
+) -> Result<String, String> {
+    call_host_params(
+        host,
+        "chat_send",
+        serde_json::json!({ "text": text, "sessionId": session_id.unwrap_or_default() }),
+        CHAT_TIMEOUT,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn chat_stop(
+    host: tauri::State<'_, HostHandle>,
+    session_id: Option<String>,
+) -> Result<String, String> {
+    call_host_params(
+        host,
+        "chat_stop",
+        serde_json::json!({ "sessionId": session_id.unwrap_or_default() }),
+        CALL_TIMEOUT,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn chat_approve(
+    host: tauri::State<'_, HostHandle>,
+    id: String,
+) -> Result<String, String> {
+    call_host_params(
+        host,
+        "chat_approve",
+        serde_json::json!({ "id": id }),
+        CALL_TIMEOUT,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn chat_new(host: tauri::State<'_, HostHandle>) -> Result<String, String> {
+    call_host(host, "chat_new").await
+}
+
+#[tauri::command]
+pub async fn chat_open(
+    host: tauri::State<'_, HostHandle>,
+    session_id: String,
+) -> Result<String, String> {
+    call_host_params(
+        host,
+        "chat_open",
+        serde_json::json!({ "sessionId": session_id }),
+        CALL_TIMEOUT,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn mail_state(host: tauri::State<'_, HostHandle>) -> Result<String, String> {
+    call_host(host, "mail_state").await
+}
+
+#[tauri::command]
+pub async fn memory_list(host: tauri::State<'_, HostHandle>) -> Result<String, String> {
+    call_host(host, "memory_list").await
+}
+
+#[tauri::command]
+pub async fn memory_remember(
+    host: tauri::State<'_, HostHandle>,
+    text: String,
+    session_id: Option<String>,
+) -> Result<String, String> {
+    call_host_params(
+        host,
+        "memory_remember",
+        serde_json::json!({ "text": text, "sessionId": session_id.unwrap_or_default() }),
+        CALL_TIMEOUT,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn memory_delete(
+    host: tauri::State<'_, HostHandle>,
+    id: String,
+) -> Result<String, String> {
+    call_host_params(
+        host,
+        "memory_delete",
+        serde_json::json!({ "id": id }),
+        CALL_TIMEOUT,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn builder_plan(
+    host: tauri::State<'_, HostHandle>,
+    prompt: Option<String>,
+    template: Option<String>,
+) -> Result<String, String> {
+    call_host_params(
+        host,
+        "builder_plan",
+        serde_json::json!({
+            "prompt": prompt.unwrap_or_default(),
+            "template": template.unwrap_or_default(),
+        }),
+        CALL_TIMEOUT,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn builder_install(
+    host: tauri::State<'_, HostHandle>,
+    prompt: Option<String>,
+    template: Option<String>,
+) -> Result<String, String> {
+    call_host_params(
+        host,
+        "builder_install",
+        serde_json::json!({
+            "prompt": prompt.unwrap_or_default(),
+            "template": template.unwrap_or_default(),
+        }),
+        CALL_TIMEOUT,
+    )
+    .await
+}
+
 impl HostInner {
     fn supervise(self: Arc<Self>) {
         // After a host that stayed up is killed, the next wait is the shortest
@@ -229,7 +456,7 @@ impl HostInner {
     }
 
     fn run_once(self: &Arc<Self>) -> bool {
-        let mut child = match host_command(&self.bin).spawn() {
+        let mut child = match host_command(&self.bin, &self.data_dir).spawn() {
             Ok(child) => child,
             Err(err) => {
                 self.log_line(&format!(
@@ -296,17 +523,27 @@ impl HostInner {
     }
 
     fn call_params(&self, method: &str, params: serde_json::Value) -> Result<String, String> {
-        self.call_frame(method, Some(params))
+        self.call_params_timeout(method, params, CALL_TIMEOUT)
+    }
+
+    fn call_params_timeout(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+        timeout: Duration,
+    ) -> Result<String, String> {
+        self.call_frame(method, Some(params), timeout)
     }
 
     fn call(&self, method: &str) -> Result<String, String> {
-        self.call_frame(method, None)
+        self.call_frame(method, None, CALL_TIMEOUT)
     }
 
     fn call_frame(
         &self,
         method: &str,
         params: Option<serde_json::Value>,
+        timeout: Duration,
     ) -> Result<String, String> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (sender, receiver): (
@@ -331,7 +568,7 @@ impl HostInner {
             }
             pending
         };
-        match receiver.recv_timeout(CALL_TIMEOUT) {
+        match receiver.recv_timeout(timeout) {
             Ok(result) => result,
             Err(_) => {
                 pending.lock().unwrap().remove(&id);
@@ -443,12 +680,13 @@ fn sidecar_path() -> Result<PathBuf, String> {
     Ok(path)
 }
 
-fn host_command(path: &Path) -> Command {
+fn host_command(path: &Path, data_dir: &Path) -> Command {
     let mut command = Command::new(path);
     command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::piped())
+        .env("PA_DATA_DIR", data_dir);
     if let Some(dir) = path.parent() {
         command.current_dir(dir);
     }

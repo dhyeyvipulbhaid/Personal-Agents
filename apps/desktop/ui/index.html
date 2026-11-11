@@ -7,30 +7,34 @@
     <link rel="stylesheet" href="app.css" />
   </head>
   <body>
-    <nav>
-      <a href="index.html">Home</a>
-      <a href="activity.html">Activity</a>
-      <a href="approvals.html">Approvals</a>
-      <a href="chat.html">Chat</a>
-      <a href="capabilities.html">Capabilities</a>
-    </nav>
-    <main>
-      <h1>Personal Agents</h1>
+    <div id="shell-root"></div>
+    <template id="page-body">
+      <header class="page-head">
+        <div>
+          <h1 class="page-title">Home</h1>
+          <p class="lede">Widgets, revenue, mail, and anything waiting on you.</p>
+        </div>
+        <div class="toolbar">
+          <div class="segmented">
+            <button type="button" id="layout-grid" aria-pressed="true">Grid</button>
+            <button type="button" id="layout-list" aria-pressed="false">List</button>
+          </div>
+          <div class="segmented">
+            <button type="button" id="density-comfortable" aria-pressed="true">
+              Comfortable
+            </button>
+            <button type="button" id="density-compact" aria-pressed="false">
+              Compact
+            </button>
+          </div>
+        </div>
+      </header>
       <p id="version">Version 0.0.0</p>
       <p id="host-version">Agent host …</p>
-      <p id="ollama-status">Checking Ollama …</p>
-      <p>
-        <label for="theme">Theme</label>
-        <select id="theme">
-          <option value="system">Follow system</option>
-          <option value="light">Light</option>
-          <option value="dark">Dark</option>
-        </select>
-      </p>
-      <section id="widgets" aria-label="Widgets"></section>
-      <p id="revenue-status">Revenue …</p>
-    </main>
+      <section id="widgets" class="cards grid comfortable" aria-label="Widgets"></section>
+    </template>
     <script src="shortcut.js"></script>
+    <script src="shell.js"></script>
     <script src="main.js"></script>
   </body>
 </html>

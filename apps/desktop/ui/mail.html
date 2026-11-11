@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Mail — Personal Agents</title>
+    <link rel="stylesheet" href="app.css" />
+  </head>
+  <body>
+    <div id="shell-root"></div>
+    <template id="page-body">
+      <header class="page-head">
+        <div>
+          <h1 class="page-title">Mail</h1>
+          <p class="lede">The demo mailbox copied onto this machine. Nothing is sent to a server.</p>
+        </div>
+      </header>
+      <section class="card">
+        <h2>Digest</h2>
+        <ul id="digest" class="plain-list"></ul>
+      </section>
+      <section class="card">
+        <h2>Follow-ups</h2>
+        <ul id="follow-ups" class="plain-list"></ul>
+      </section>
+      <ol id="messages" class="message-list"></ol>
+    </template>
+    <script src="shortcut.js"></script>
+    <script src="shell.js"></script>
+    <script src="mail.js"></script>
+  </body>
+</html>

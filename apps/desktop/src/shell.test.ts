@@ -67,11 +67,14 @@ test("the main page frames plugin widgets and switches theme", async () => {
     new URL("../src-tauri/build.rs", import.meta.url),
   ).text();
 
-  expect(html).toContain('id="theme"');
-  expect(html).toContain('value="system"');
-  expect(html).toContain('value="light"');
-  expect(html).toContain('value="dark"');
-  expect(html).toContain("Follow system");
+  const shell = await Bun.file(
+    new URL("../ui/shell.js", import.meta.url),
+  ).text();
+  expect(shell).toContain('id="theme"');
+  expect(shell).toContain('value="system"');
+  expect(shell).toContain('value="light"');
+  expect(shell).toContain('value="dark"');
+  expect(shell).toContain("Follow system");
   expect(html).toContain('id="widgets"');
   expect(script).toContain('invoke("widgets")');
   expect(script).toContain('setAttribute("sandbox", "")');
@@ -79,17 +82,92 @@ test("the main page frames plugin widgets and switches theme", async () => {
   expect(config.app.security.csp).toContain("style-src 'self' 'unsafe-inline'");
   expect(capabilities.permissions).toContain("allow-widgets");
   expect(build).toContain("widgets");
-  expect(html).toContain('id="ollama-status"');
-  expect(html).toContain('href="activity.html"');
-  expect(html).toContain('href="approvals.html"');
-  expect(script).toContain('invoke("ollama_status")');
-  expect(script).toContain("https://ollama.com/download");
+  expect(shell).toContain('id="ollama-status"');
+  expect(shell).toContain('"activity.html"');
+  expect(shell).toContain('"approvals.html"');
+  expect(shell).toContain('invoke("ollama_status")');
+  expect(shell).toContain("https://ollama.com/download");
   expect(capabilities.permissions).toContain("allow-ollama-status");
   expect(capabilities.permissions).toContain("allow-audit-log");
   expect(capabilities.permissions).toContain("allow-approvals");
   expect(capabilities.permissions).toContain("allow-approval-act");
   expect(build).toContain("audit_log");
   expect(build).toContain("approval_act");
+});
+
+test("every page uses one shell and does not say unavailable", async () => {
+  const pages = [
+    "index.html",
+    "chat.html",
+    "approvals.html",
+    "activity.html",
+    "capabilities.html",
+    "builder.html",
+    "memory.html",
+    "mail.html",
+  ];
+  const shell = await Bun.file(
+    new URL("../ui/shell.js", import.meta.url),
+  ).text();
+  for (const href of [
+    "index.html",
+    "chat.html",
+    "approvals.html",
+    "activity.html",
+    "capabilities.html",
+    "builder.html",
+    "memory.html",
+    "mail.html",
+  ]) {
+    expect(shell).toContain(`"${href}"`);
+  }
+  expect(shell).toContain("Running locally. All data stays on this machine.");
+  for (const page of pages) {
+    const html = await Bun.file(
+      new URL(`../ui/${page}`, import.meta.url),
+    ).text();
+    expect(html).toContain('src="shell.js"');
+    expect(html).not.toContain("<nav>");
+    expect(html.toLowerCase()).not.toContain("unavailable");
+  }
+  const chat = await Bun.file(
+    new URL("../ui/chat.html", import.meta.url),
+  ).text();
+  expect(chat).toContain('value="qwen3:4b"');
+  expect(chat).toContain('value="qwen3:8b"');
+  expect(chat).toContain("qwen2.5-coder:7b");
+  expect(chat).not.toContain('value="llama"');
+  const styles = await Bun.file(
+    new URL("../ui/app.css", import.meta.url),
+  ).text();
+  expect(styles).toContain("fonts/inter-latin-400-normal.woff2");
+  expect(styles).not.toContain("http");
+});
+
+test("every shell command is registered and permitted", async () => {
+  const main = await Bun.file(
+    new URL("../src-tauri/src/main.rs", import.meta.url),
+  ).text();
+  const build = await Bun.file(
+    new URL("../src-tauri/build.rs", import.meta.url),
+  ).text();
+  const capabilities = (await Bun.file(
+    new URL("../src-tauri/capabilities/default.json", import.meta.url),
+  ).json()) as { permissions: string[] };
+  const block = /generate_handler!\[([\s\S]*?)\]/.exec(main)?.[1] ?? "";
+  const names = [...block.matchAll(/host::([a-z0-9_]+)/g)].map(
+    (match) => match[1],
+  );
+  expect(names).toContain("chat_send");
+  expect(names).toContain("revenue_status");
+  expect(names).toContain("capabilities");
+  expect(names).toContain("list_models");
+  for (const name of names) {
+    expect(build).toContain(`"${name}"`);
+    expect(capabilities.permissions).toContain(
+      `allow-${name.replaceAll("_", "-")}`,
+    );
+  }
 });
 
 test("packaging is per-user and unsigned", async () => {

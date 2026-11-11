@@ -7,28 +7,55 @@
     <link rel="stylesheet" href="app.css" />
   </head>
   <body>
-    <nav>
-      <a href="index.html">Home</a>
-      <a href="activity.html">Activity</a>
-      <a href="approvals.html">Approvals</a>
-      <a href="chat.html">Chat</a>
-    </nav>
-    <main>
-      <h1>Chat</h1>
-      <form id="models">
-        <label>Chat model <input id="chat-model" name="chat" value="llama" /></label>
-        <label>Agent model <input id="agent-model" name="agent" value="llama" /></label>
-        <label>Builder model <input id="builder-model" name="builder" value="llama" /></label>
+    <div id="shell-root"></div>
+    <template id="page-body">
+      <header class="page-head">
+        <div>
+          <h1 class="page-title">Chat</h1>
+          <p class="lede">One local model on this machine. Chat is its own page.</p>
+        </div>
+      </header>
+      <p class="model-status">
+        <span id="ollama-dot" class="dot"></span>
+        <span id="model-notice">Checking Ollama at 127.0.0.1:11434.</span>
+      </p>
+      <form id="models" class="model-row">
+        <label>Chat model
+          <select id="chat-model" name="chat">
+            <option value="qwen3:4b">qwen3:4b</option>
+          </select>
+        </label>
+        <label>Agent model
+          <select id="agent-model" name="agent">
+            <option value="qwen3:8b">qwen3:8b</option>
+          </select>
+        </label>
+        <label>Builder model
+          <select id="builder-model" name="builder">
+            <option value="qwen2.5-coder:7b">qwen2.5-coder:7b</option>
+          </select>
+        </label>
         <button type="submit">Save models</button>
-        <p id="model-error"></p>
       </form>
-      <ol id="transcript"></ol>
-      <form id="composer">
-        <input id="draft" name="text" />
-        <button type="submit">Send</button>
-      </form>
-    </main>
+      <p id="model-error" class="notice"></p>
+      <div class="chat-layout">
+        <aside>
+          <button type="button" id="new-chat" class="ghost">New chat</button>
+          <div id="sessions" class="session-list"></div>
+        </aside>
+        <section>
+          <div id="thread" class="thread" aria-live="polite"></div>
+          <form id="composer" class="composer">
+            <textarea id="draft" name="text" placeholder="Message"></textarea>
+            <div class="button-row">
+              <button type="submit" id="send-button">Send</button>
+            </div>
+          </form>
+        </section>
+      </div>
+    </template>
     <script src="shortcut.js"></script>
+    <script src="shell.js"></script>
     <script src="chat.js"></script>
   </body>
 </html>

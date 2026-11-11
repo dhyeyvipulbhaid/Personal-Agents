@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Memory — Personal Agents</title>
+    <link rel="stylesheet" href="app.css" />
+  </head>
+  <body>
+    <div id="shell-root"></div>
+    <template id="page-body">
+      <header class="page-head">
+        <div>
+          <h1 class="page-title">Memory</h1>
+          <p class="lede">Facts saved on this machine. This version does not encrypt them.</p>
+        </div>
+      </header>
+      <form id="remember" class="button-row">
+        <label>Fact <input id="fact" name="text" /></label>
+        <button type="submit">Save fact</button>
+      </form>
+      <p id="memory-status" class="notice"></p>
+      <ul id="facts" class="plain-list"></ul>
+    </template>
+    <script src="shortcut.js"></script>
+    <script src="shell.js"></script>
+    <script src="memory.js"></script>
+  </body>
+</html>
