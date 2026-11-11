@@ -21,7 +21,12 @@ export type ScheduleEffect = {
   everyMs: number;
 };
 
-export type PluginEffect = TileEffect | ScheduleEffect;
+export type ConnectorEffect = {
+  effect: "connector";
+  id: string;
+};
+
+export type PluginEffect = TileEffect | ScheduleEffect | ConnectorEffect;
 
 export type Registration = PluginEffect & { pluginId: string };
 
@@ -317,6 +322,13 @@ function acceptRegistration(
       title: record.title,
       html: record.html,
     };
+  }
+  if (record.effect === "connector") {
+    requireEffect(manifest, "connector");
+    if (accepted.some((item) => item.effect === "connector")) {
+      throw new Error("connector is already registered");
+    }
+    return { effect: "connector", id: manifest.id };
   }
   if (record.effect === "schedule") {
     requireEffect(manifest, "schedule");
