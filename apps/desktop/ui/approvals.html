@@ -7,16 +7,19 @@
     <link rel="stylesheet" href="app.css" />
   </head>
   <body>
-    <nav>
-      <a href="index.html">Home</a>
-      <a href="activity.html">Activity</a>
-      <a href="approvals.html">Approvals</a>
-    </nav>
-    <main>
-      <h1>Approvals</h1>
-      <div id="requests"></div>
-    </main>
+    <div id="shell-root"></div>
+    <template id="page-body">
+      <header class="page-head">
+        <div>
+          <h1 class="page-title">Approvals</h1>
+          <p class="lede">Requests wait here until you approve, edit, deny, or snooze them.</p>
+        </div>
+      </header>
+      <p id="approval-help" class="help"></p>
+      <div id="requests" class="stack"></div>
+    </template>
     <script src="shortcut.js"></script>
+    <script src="shell.js"></script>
     <script src="approvals.js"></script>
   </body>
 </html>

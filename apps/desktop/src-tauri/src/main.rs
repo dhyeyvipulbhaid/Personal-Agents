@@ -25,7 +25,23 @@ fn main() {
             host::ollama_status,
             host::audit_log,
             host::approvals,
-            host::approval_act
+            host::approval_act,
+            host::revenue_status,
+            host::capabilities,
+            host::list_models,
+            host::set_models,
+            host::chat_state,
+            host::chat_send,
+            host::chat_stop,
+            host::chat_approve,
+            host::chat_new,
+            host::chat_open,
+            host::mail_state,
+            host::memory_list,
+            host::memory_remember,
+            host::memory_delete,
+            host::builder_plan,
+            host::builder_install
         ])
         .build(tauri::generate_context!())
         .expect("failed to open the Personal Agents window")
@@ -45,7 +61,7 @@ fn open_window(app: &mut tauri::App) -> tauri::Result<()> {
     let data_dir = app.path().app_local_data_dir()?;
     WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
         .title("Personal Agents")
-        .inner_size(800.0, 600.0)
+        .inner_size(1180.0, 800.0)
         .data_directory(data_dir)
         .build()?;
     Ok(())

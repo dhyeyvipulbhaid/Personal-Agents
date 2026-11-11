@@ -87,6 +87,47 @@ test("the ollama connector returns structured output", async () => {
   ).toEqual({ total: 3 });
 });
 
+test("v1 defaults are qwen3:4b, qwen3:8b, and qwen2.5-coder:7b", () => {
+  const settings = new ModelSettings();
+  expect(settings.get("chat")).toBe("qwen3:4b");
+  expect(settings.get("agent")).toBe("qwen3:8b");
+  expect(settings.get("builder")).toBe("qwen2.5-coder:7b");
+});
+
+test("a missing ollama model tells you the pull command", async () => {
+  const connector = new OllamaConnector(async () => {
+    return new Response(
+      JSON.stringify({ error: "model 'qwen3:4b' not found" }),
+      {
+        status: 404,
+      },
+    );
+  });
+  await expect(
+    connector.chat(
+      { model: "qwen3:4b", messages: [{ role: "user", content: "hi" }] },
+      () => {},
+    ),
+  ).rejects.toThrow("ollama pull qwen3:4b");
+});
+
+test("tags without capabilities fall back to /api/show", async () => {
+  const connector = new OllamaConnector(async (url) => {
+    if (url.endsWith("/api/tags")) {
+      return Response.json({ models: [{ name: "qwen3:4b" }] });
+    }
+    return Response.json({ capabilities: ["completion", "tools"] });
+  });
+  expect(await connector.listModels()).toEqual([
+    {
+      name: "qwen3:4b",
+      tools: true,
+      streaming: true,
+      structured: false,
+    },
+  ]);
+});
+
 test("a model without tool support cannot be the agent model", () => {
   const settings = new ModelSettings();
   settings.set("chat", "plain", [withTools, withoutTools]);

@@ -129,3 +129,11 @@ jobs:
 
       - name: Widget theme flow
         run: bun run test:e2e
+
+      - name: Upload UI screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-screenshots-${{ runner.os }}
+          path: artifacts/ui-screenshots/
+          if-no-files-found: ignore

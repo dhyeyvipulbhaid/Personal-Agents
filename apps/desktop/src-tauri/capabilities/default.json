@@ -10,6 +10,22 @@
     "allow-ollama-status",
     "allow-audit-log",
     "allow-approvals",
-    "allow-approval-act"
+    "allow-approval-act",
+    "allow-revenue-status",
+    "allow-capabilities",
+    "allow-list-models",
+    "allow-set-models",
+    "allow-chat-state",
+    "allow-chat-send",
+    "allow-chat-stop",
+    "allow-chat-approve",
+    "allow-chat-new",
+    "allow-chat-open",
+    "allow-mail-state",
+    "allow-memory-list",
+    "allow-memory-remember",
+    "allow-memory-delete",
+    "allow-builder-plan",
+    "allow-builder-install"
   ]
 }

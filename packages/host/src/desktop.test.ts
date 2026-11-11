@@ -1,0 +1,171 @@
+import { expect, test } from "bun:test";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { SAMPLE_REVENUE_CSV } from "./data/demo.ts";
+import { DesktopApp } from "./desktop.ts";
+import { revenueTotal } from "./files/revenue.ts";
+import { rowsFromCsv } from "./files/table.ts";
+import type { ChatRequest, ModelAdapter } from "./models/adapter.ts";
+
+test("the sample revenue file ships with the app and totals 220", () => {
+  const text = readFileSync(
+    new URL("../fixtures/revenue/revenue.csv", import.meta.url),
+    "utf8",
+  ).replaceAll("\r\n", "\n");
+  expect(text).toBe(SAMPLE_REVENUE_CSV);
+  expect(revenueTotal(rowsFromCsv(text))).toBe(220);
+});
+
+test("a fresh host serves revenue, mail, and capabilities without an unavailable state", async () => {
+  const { app, methods } = await harness();
+  try {
+    const revenue = JSON.parse(await methods.revenue_status({})) as {
+      total: number;
+      line: string;
+    };
+    expect(revenue.total).toBe(220);
+    expect(revenue.line).toContain("health ok");
+    expect(JSON.stringify(revenue).toLowerCase()).not.toContain("unavailable");
+
+    const mail = JSON.parse(await methods.mail_state({})) as {
+      count: number;
+      digest: string[];
+      followUps: string[];
+    };
+    expect(mail.count).toBe(30);
+    expect(mail.digest).toEqual(["Budget notes", "Desk request", "Lunch"]);
+    expect(mail.followUps).toEqual([
+      "North contract",
+      "Q4 plan",
+      "West renewal",
+    ]);
+
+    const report = JSON.parse(await methods.capabilities({})) as {
+      checks: { name: string; status: string; cause: string; advice: string }[];
+      plugins: { name: string; health: string; summary: string }[];
+    };
+    const ollama = report.checks.find((check) => check.name === "ollama");
+    expect(ollama?.status).toBe("blocked");
+    expect(ollama?.cause).toBe("port closed");
+    expect(ollama?.advice).toContain("ollama pull qwen3:4b");
+    expect(report.plugins.some((card) => card.name === "Hello")).toBe(true);
+    expect(JSON.stringify(report).toLowerCase()).not.toContain("unavailable");
+  } finally {
+    app.close();
+  }
+});
+
+test("chat names the pull command when the v1 model is not installed", async () => {
+  const { app, methods } = await harness(async () => {
+    throw new Error("fetch failed");
+  });
+  try {
+    const raw = await methods.chat_send({ text: "hello there" });
+    const state = JSON.parse(raw) as {
+      messages: { role: string; text: string }[];
+      models: { chat: string };
+    };
+    expect(state.models.chat).toBe("qwen3:4b");
+    expect(state.messages.map((message) => message.text).join("\n")).toContain(
+      "ollama pull qwen3:4b",
+    );
+    await expect(
+      methods.set_models({
+        chat: "missing:model",
+        agent: "qwen3:8b",
+        builder: "qwen2.5-coder:7b",
+      }),
+    ).rejects.toThrow("ollama pull missing:model");
+  } finally {
+    app.close();
+  }
+});
+
+test("a stated fact is recalled in a later chat with its session source", async () => {
+  const seen: ChatRequest[] = [];
+  const { app, methods } = await harness(async (request) => {
+    seen.push(request);
+    return { text: "ok" };
+  });
+  try {
+    await methods.chat_send({ text: "the revenue total is 220" });
+    const facts = JSON.parse(await methods.memory_list({})) as {
+      id: string;
+      text: string;
+      source: string;
+    }[];
+    expect(facts).toEqual([
+      { id: "fact-1", text: "the revenue total is 220", source: "session-1" },
+    ]);
+    await methods.chat_new({});
+    await methods.chat_send({ text: "what is the revenue total?" });
+    const context = seen
+      .at(-1)
+      ?.messages.find((message) => message.role === "system");
+    expect(context?.content).toContain("the revenue total is 220");
+    expect(context?.content).toContain("source session-1");
+    await methods.memory_delete({ id: "fact-1" });
+    expect(JSON.parse(await methods.memory_list({}))).toEqual([]);
+  } finally {
+    app.close();
+  }
+});
+
+test("the builder plans a revenue number widget and waits for approval", async () => {
+  const { app, methods } = await harness();
+  try {
+    const plan = JSON.parse(
+      await methods.builder_plan({
+        prompt: "show total revenue as a big number",
+      }),
+    ) as { preview: string; steps: { name: string; state: string }[] };
+    expect(plan.preview).toContain("220");
+    expect(plan.preview).toContain("__PA_THEME__");
+    expect(plan.steps.map((step) => step.name)).toEqual([
+      "Draft",
+      "Generate",
+      "Check",
+      "Install",
+    ]);
+    const installed = JSON.parse(await methods.builder_install({})) as {
+      approvalId: string;
+    };
+    const pending = JSON.parse(await methods.approvals({})) as {
+      id: string;
+      summary: string;
+    }[];
+    expect(pending.map((item) => item.id)).toEqual([installed.approvalId]);
+    expect(pending[0]?.summary).toContain("qwen2.5-coder:7b");
+  } finally {
+    app.close();
+  }
+});
+
+async function harness(chat?: ModelAdapter["chat"]): Promise<{
+  app: DesktopApp;
+  methods: ReturnType<DesktopApp["methods"]>;
+}> {
+  const dir = mkdtempSync(join(tmpdir(), "pa-desktop-"));
+  const adapter: ModelAdapter = {
+    async listModels() {
+      return [];
+    },
+    chat:
+      chat ??
+      (async () => {
+        return { text: "ok" };
+      }),
+    async structured<T>(): Promise<T> {
+      return {} as T;
+    },
+  };
+  const app = new DesktopApp({
+    dataDir: dir,
+    adapter,
+    probe: async () => "stopped",
+    now: () => Date.parse("2026-11-11T12:00:00.000Z"),
+  });
+  await app.start();
+  return { app, methods: app.methods() };
+}

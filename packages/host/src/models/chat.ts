@@ -2,7 +2,7 @@ import type { Approvals } from "../approvals/approvals.ts";
 import type { ChatResult, ModelAdapter, ModelSettings } from "./adapter.ts";
 
 export type TranscriptEntry = {
-  role: "user" | "assistant" | "approval";
+  role: "user" | "assistant" | "approval" | "memory";
   text: string;
   approvalId?: string;
 };
@@ -12,6 +12,7 @@ export class ChatSession {
   readonly messages: TranscriptEntry[] = [];
   modelsUsed: string[] = [];
   firstTokenMs: number | null = null;
+  private abort: AbortController | null = null;
 
   constructor(
     private readonly adapter: ModelAdapter,
@@ -20,29 +21,62 @@ export class ChatSession {
     private readonly clock: () => number = Date.now,
   ) {}
 
-  async send(text: string): Promise<ChatResult> {
+  stop(): void {
+    this.abort?.abort();
+  }
+
+  async send(text: string, context?: string): Promise<ChatResult> {
     this.messages.push({ role: "user", text });
     const model = this.settings.get("chat");
     this.modelsUsed.push(model);
+    const history = this.turns();
+    const assistant: TranscriptEntry = { role: "assistant", text: "" };
+    this.messages.push(assistant);
     const started = this.clock();
     let sawToken = false;
-    const result = await this.adapter.chat(
-      {
-        model,
-        messages: this.turns(),
-      },
-      () => {
-        if (!sawToken) {
-          this.firstTokenMs = this.clock() - started;
-          sawToken = true;
+    const controller = new AbortController();
+    this.abort = controller;
+    try {
+      const result = await this.adapter.chat(
+        {
+          model,
+          messages: [
+            ...(context ? [{ role: "system" as const, content: context }] : []),
+            ...history,
+          ],
+        },
+        (delta) => {
+          if (!sawToken) {
+            this.firstTokenMs = this.clock() - started;
+            sawToken = true;
+          }
+          assistant.text += delta.token;
+        },
+        controller.signal,
+      );
+      if (result.text) {
+        assistant.text = result.text;
+      }
+      if (result.toolCall) {
+        this.raiseApproval(result.toolCall.name, result.toolCall.arguments);
+      }
+      return result;
+    } catch (error) {
+      if (controller.signal.aborted) {
+        if (assistant.text.length === 0) {
+          assistant.text = "Stopped.";
         }
-      },
-    );
-    this.messages.push({ role: "assistant", text: result.text });
-    if (result.toolCall) {
-      this.raiseApproval(result.toolCall.name, result.toolCall.arguments);
+        return { text: assistant.text };
+      }
+      const message =
+        error instanceof Error ? error.message : "The model did not answer.";
+      assistant.text = message;
+      throw error;
+    } finally {
+      if (this.abort === controller) {
+        this.abort = null;
+      }
     }
-    return result;
   }
 
   private turns(): { role: "user" | "assistant"; content: string }[] {
