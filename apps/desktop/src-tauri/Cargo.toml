@@ -1,0 +1,16 @@
+[package]
+name = "personal-agents"
+version = "0.0.0"
+description = "Personal Agents desktop shell"
+edition = "2021"
+rust-version = "1.90"
+
+[build-dependencies]
+tauri-build = { version = "2.7.4", features = [] }
+
+[dependencies]
+tauri = { version = "2.12.5", features = [] }
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
