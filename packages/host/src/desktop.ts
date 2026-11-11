@@ -167,6 +167,7 @@ export class DesktopApp {
   private readonly browser: BrowserSession;
   private readonly drive: BrowserDrive;
   private readonly audit: (entry: ActivityEntry) => void;
+  private chatTurn = 0;
 
   constructor(options: DesktopOptions) {
     this.adapter =
@@ -257,6 +258,7 @@ export class DesktopApp {
       chat_send: async (params) => this.sendChat(params),
       chat_stop: () => {
         const session = this.ensure();
+        this.chatTurn += 1;
         session.chat.stop();
         this.approvals.cancelTask("browser");
         this.approvals.cancelTask("chat");
@@ -483,6 +485,7 @@ export class DesktopApp {
     const context = [toolPrompt(), remembered]
       .filter((part) => part.length > 0)
       .join("\n");
+    const turn = ++this.chatTurn;
     session.streaming = true;
     try {
       await session.chat.send(text, context, {
@@ -506,7 +509,9 @@ export class DesktopApp {
       }
       console.error(`chat-send failed: ${detail}`);
     } finally {
-      session.streaming = false;
+      if (this.chatTurn === turn) {
+        session.streaming = false;
+      }
     }
     if (kind === "revenue") {
       this.groundRevenue(session);

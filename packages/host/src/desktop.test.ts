@@ -8,6 +8,7 @@ import { revenueTotal } from "./files/revenue.ts";
 import { rowsFromCsv } from "./files/table.ts";
 import type { ChatRequest, ModelAdapter } from "./models/adapter.ts";
 import { OllamaConnector } from "./models/ollama.ts";
+import { dispatch } from "./rpc.ts";
 
 test("the sample revenue file ships with the app and totals 220", () => {
   const text = readFileSync(
@@ -276,7 +277,7 @@ test("a denied visit is one approval and the model says it was not allowed", asy
         .filter((message) => message.role === "assistant")
         .map((message) => message.text)
         .join("\n"),
-    ).toContain("not allowed");
+    ).toContain("Not allowed: I didn't open example.com.");
   } finally {
     app.close();
   }
@@ -402,13 +403,18 @@ test("a denied browser.read does not return the page text", async () => {
       scope: "once",
       until: 0,
     });
-    await send;
+    const state = JSON.parse(await send) as {
+      messages: { role: string; text: string }[];
+    };
     expect(fetches).toBe(0);
-    const tool = seen
-      .flatMap((request) => request.messages)
-      .find((message) => message.role === "tool");
-    expect(tool?.content).toContain('"opened":false');
-    expect(tool?.content ?? "").not.toContain("hidden ledger");
+    expect(seen).toHaveLength(1);
+    expect(
+      state.messages
+        .filter((message) => message.role === "assistant")
+        .map((message) => message.text)
+        .join("\n"),
+    ).toBe("Not allowed: I didn't open example.com.");
+    expect(JSON.stringify(state.messages)).not.toContain("hidden ledger");
   } finally {
     globalThis.fetch = originalFetch;
     app.close();
@@ -502,7 +508,7 @@ test("denying the inline approval says the visit was not allowed", async () => {
         .filter((message) => message.role === "assistant")
         .map((message) => message.text)
         .join("\n"),
-    ).toContain("not allowed");
+    ).toContain("Not allowed: I didn't open example.com.");
     const next = JSON.parse(await methods.chat_send({ text: "say hello" })) as {
       messages: { role: string; text: string }[];
     };
@@ -618,6 +624,79 @@ test("stop during a pending approval ends the turn and the next message works", 
     expect(next.messages.some((message) => message.text === "next ok")).toBe(
       true,
     );
+  } finally {
+    app.close();
+  }
+});
+
+test("denying while chat_send is in flight replies without another model call", async () => {
+  let calls = 0;
+  const { app, methods } = await harness(async () => {
+    calls += 1;
+    if (calls === 1) {
+      return {
+        text: "",
+        toolCall: {
+          name: "browser.open",
+          arguments: JSON.stringify({ url: "https://www.wikipedia.org" }),
+        },
+      };
+    }
+    await Bun.sleep(3000);
+    return { text: "slow model" };
+  });
+  try {
+    const sendPromise = dispatch(
+      {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "chat_send",
+        params: { text: "Open wikipedia.org and tell me the title." },
+      },
+      methods,
+    );
+    const gate = await Promise.race([
+      sendPromise.then(() => ({ kind: "sent" as const, id: "" })),
+      waitForApproval(methods),
+    ]);
+    if (gate.kind !== "approval") {
+      throw new Error("the visit ended before its approval");
+    }
+    const started = Date.now();
+    const denied = await dispatch(
+      {
+        jsonrpc: "2.0",
+        id: 2,
+        method: "approval_act",
+        params: {
+          action: "deny",
+          id: gate.id,
+          draft: "",
+          instruction: "",
+          scope: "once",
+          until: 0,
+        },
+      },
+      methods,
+    );
+    expect(denied?.error).toBeUndefined();
+    const sent = await sendPromise;
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(calls).toBe(1);
+    const state = JSON.parse(String(sent?.result)) as {
+      streaming: boolean;
+      messages: { role: string; text: string }[];
+    };
+    expect(state.streaming).toBe(false);
+    expect(
+      state.messages
+        .filter((message) => message.role === "assistant")
+        .map((message) => message.text)
+        .join("\n"),
+    ).toBe("Not allowed: I didn't open www.wikipedia.org.");
+    expect(
+      state.messages.some((message) => message.text.includes("(denied)")),
+    ).toBe(true);
   } finally {
     app.close();
   }

@@ -16,6 +16,9 @@ export type DriveResult = {
   ok: boolean;
   allowed: boolean;
   cancelled?: boolean;
+  denied?: boolean;
+  action?: "navigate" | "click" | "type";
+  target?: string;
   url?: string;
   opened?: boolean;
   title?: string;
@@ -73,7 +76,7 @@ export class BrowserDrive {
     }
     const decision = await this.gate(summary, "browser.navigate", url, signal);
     if (decision !== "approved") {
-      return this.refused(decision, url);
+      return this.refused(decision, "navigate", url);
     }
     if (this.halted(signal)) {
       return this.stopped(url);
@@ -137,7 +140,7 @@ export class BrowserDrive {
     }
     const decision = await this.gate(summary, "browser.click", label, signal);
     if (decision !== "approved") {
-      return this.refused(decision);
+      return this.refused(decision, "click", this.currentUrl, label);
     }
     if (this.halted(signal)) {
       return this.stopped();
@@ -194,7 +197,7 @@ export class BrowserDrive {
     }
     const decision = await this.gate(summary, "browser.type", text, signal);
     if (decision !== "approved") {
-      return this.refused(decision);
+      return this.refused(decision, "type", this.currentUrl, field);
     }
     if (this.halted(signal)) {
       return this.stopped();
@@ -408,14 +411,22 @@ export class BrowserDrive {
     return signal?.aborted === true || this.options.session.stopped;
   }
 
-  private refused(decision: Gate, url?: string): DriveResult {
+  private refused(
+    decision: Gate,
+    action: "navigate" | "click" | "type",
+    url?: string,
+    target?: string,
+  ): DriveResult {
     if (decision === "cancelled") {
       return this.stopped(url);
     }
     return {
       ok: false,
       allowed: false,
+      denied: true,
+      action,
       url,
+      target,
       message: "That action was not allowed.",
     };
   }

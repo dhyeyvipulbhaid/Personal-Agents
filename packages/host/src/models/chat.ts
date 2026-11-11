@@ -91,6 +91,11 @@ export class ChatSession {
           }
           return { text: assistant.text };
         }
+        const refused = deniedActionReply(toolOutput);
+        if (refused) {
+          assistant.text = refused;
+          return { text: refused };
+        }
         messages.push({
           role: "assistant",
           content: result.text,
@@ -206,16 +211,71 @@ function parsedArguments(raw: string): unknown {
   }
 }
 
-function replyFromTool(output: string): string {
+type ToolPayload = {
+  opened?: boolean;
+  denied?: boolean;
+  cancelled?: boolean;
+  url?: string;
+  action?: string;
+  target?: string;
+  title?: string;
+  text?: string;
+};
+
+function deniedActionReply(output: string): string | null {
   try {
-    const parsed = JSON.parse(output) as {
-      opened?: boolean;
-      title?: string;
-      text?: string;
-    };
-    if (parsed.opened === false) {
-      return "That visit was not allowed.";
+    const parsed = JSON.parse(output) as ToolPayload;
+    if (parsed.cancelled === true) {
+      return null;
     }
+    if (parsed.denied !== true && parsed.opened !== false) {
+      return null;
+    }
+    return fixedDenial(parsed);
+  } catch {
+    return null;
+  }
+}
+
+function fixedDenial(parsed: ToolPayload): string {
+  const host = hostOf(parsed.url);
+  const target =
+    typeof parsed.target === "string" && parsed.target.length > 0
+      ? parsed.target
+      : "";
+  if (parsed.action === "click") {
+    const label = target.length > 0 ? target : "that control";
+    return host.length > 0
+      ? `Not allowed: I didn't click "${label}" on ${host}.`
+      : `Not allowed: I didn't click "${label}".`;
+  }
+  if (parsed.action === "type") {
+    const field = target.length > 0 ? target : "that field";
+    return host.length > 0
+      ? `Not allowed: I didn't type into "${field}" on ${host}.`
+      : `Not allowed: I didn't type into "${field}".`;
+  }
+  return `Not allowed: I didn't open ${host.length > 0 ? host : "that page"}.`;
+}
+
+function hostOf(url: string | undefined): string {
+  if (typeof url !== "string" || url.length === 0) {
+    return "";
+  }
+  try {
+    return new URL(url).host;
+  } catch {
+    return "";
+  }
+}
+
+function replyFromTool(output: string): string {
+  const refused = deniedActionReply(output);
+  if (refused) {
+    return refused;
+  }
+  try {
+    const parsed = JSON.parse(output) as ToolPayload;
     if (
       typeof parsed.text === "string" &&
       parsed.text.length > 0 &&

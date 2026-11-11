@@ -447,15 +447,23 @@ test("chat shows one click card and a denial does not click", async () => {
     const second = await waitFor(methods);
     expect(second.summary).toBe('click "Sign in" on sign-in.test');
     const sendsBeforeDeny = sends.length;
+    const callsBeforeDeny = seen.length;
     await methods.chat_approve({ id: second.id, action: "deny" });
     const state = JSON.parse(await secondSend) as {
       messages: { role: string; text: string }[];
     };
     expect(sends.length).toBe(sendsBeforeDeny);
+    expect(seen).toHaveLength(callsBeforeDeny);
     expect(page.clicked).toBe(0);
     expect(
       state.messages.some((message) => message.text.includes("(denied)")),
     ).toBe(true);
+    expect(
+      state.messages
+        .filter((message) => message.role === "assistant")
+        .map((message) => message.text)
+        .at(-1),
+    ).toBe('Not allowed: I didn\'t click "Sign in" on sign-in.test.');
   } finally {
     app.close();
   }

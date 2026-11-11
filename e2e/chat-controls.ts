@@ -146,7 +146,11 @@ try {
     throw new Error("the turn ended while the visit was waiting");
   }
   await page.getByRole("button", { name: "Deny" }).click();
-  await page.locator(".bubble.assistant", { hasText: "not allowed" }).waitFor();
+  await page
+    .locator(".bubble.assistant", {
+      hasText: "Not allowed: I didn't open example.com.",
+    })
+    .waitFor();
   await page.getByRole("button", { name: "Send" }).waitFor();
   if ((await page.getByRole("button", { name: "Approve" }).count()) !== 0) {
     throw new Error("the denied card still has an Approve button");
