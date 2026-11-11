@@ -127,9 +127,22 @@ try {
   }
   await approveHeld;
   releaseApprove();
-  await page
-    .locator(".bubble.assistant", { hasText: "Example Domain" })
-    .waitFor();
+  const answer = page.locator(".bubble.assistant", {
+    hasText: "Example Domain",
+  });
+  await answer.waitFor();
+  const status = page.locator(".approval-status", {
+    hasText: "Opened example.com",
+  });
+  await status.waitFor();
+  if ((await page.locator(".inline-approval").count()) !== 0) {
+    throw new Error("the resolved card stayed expanded");
+  }
+  const statusBox = await status.boundingBox();
+  const answerBox = await answer.boundingBox();
+  if (!statusBox || !answerBox || statusBox.y >= answerBox.y) {
+    throw new Error("the approval status rendered below the answer");
+  }
 } finally {
   releaseModel();
   releaseApprove();
