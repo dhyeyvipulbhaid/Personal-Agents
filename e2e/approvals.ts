@@ -63,6 +63,7 @@ try {
       .href,
   );
   await page.getByRole("heading", { name: "delete the row" }).waitFor();
+  await page.getByRole("button", { name: "Deny" }).waitFor();
   await page.locator("textarea").fill("delete row 2");
   await page.getByRole("button", { name: "Approve" }).click();
   await page.getByText("No waiting requests").waitFor();

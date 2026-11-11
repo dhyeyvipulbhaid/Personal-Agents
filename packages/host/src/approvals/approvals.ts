@@ -5,7 +5,7 @@ export type ActivityEntry = {
 };
 
 export type ApprovalDecision = {
-  decision: "approved" | "denied" | "more-info";
+  decision: "approved" | "denied" | "more-info" | "cancelled";
   draft: string;
   instruction: string;
 };
@@ -96,6 +96,22 @@ export class Approvals {
       instruction: "",
     });
     this.log(`Denied: ${entry.item.summary}`, "denied");
+  }
+
+  /** Resolves every wait for this task so a stopped chat can return. */
+  cancelTask(taskId: string): void {
+    const pending = [...this.waiting.values()].filter(
+      (entry) => entry.item.taskId === taskId,
+    );
+    for (const entry of pending) {
+      const summary = entry.item.summary;
+      this.finish(entry, {
+        decision: "cancelled",
+        draft: entry.item.draft,
+        instruction: "",
+      });
+      this.log(`${taskId} cancelled: ${summary}`, "cancelled");
+    }
   }
 
   moreInfo(id: string, instruction: string): void {

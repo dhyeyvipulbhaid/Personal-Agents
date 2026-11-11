@@ -330,11 +330,15 @@ pub async fn chat_stop(
 pub async fn chat_approve(
     host: tauri::State<'_, HostHandle>,
     id: String,
+    action: Option<String>,
 ) -> Result<String, String> {
     call_host_params(
         host,
         "chat_approve",
-        serde_json::json!({ "id": id }),
+        serde_json::json!({
+            "id": id,
+            "action": action.unwrap_or_else(|| "approve".to_string()),
+        }),
         CALL_TIMEOUT,
     )
     .await

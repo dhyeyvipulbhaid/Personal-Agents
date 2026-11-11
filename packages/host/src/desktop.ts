@@ -213,12 +213,24 @@ export class DesktopApp {
       chat_stop: () => {
         const session = this.ensure();
         session.chat.stop();
+        this.approvals.cancelTask("browser");
+        this.approvals.cancelTask("chat");
+        for (const message of session.chat.messages) {
+          if (message.role === "approval" && !settled(message.text)) {
+            message.text = `${message.text} (cancelled)`;
+          }
+        }
         session.streaming = false;
         return JSON.stringify(this.view(session));
       },
       chat_approve: (params) => {
         const session = this.ensure();
-        session.chat.approveInline(stringField(params, "id"));
+        const id = stringField(params, "id");
+        if (stringField(params, "action") === "deny") {
+          session.chat.denyInline(id);
+        } else {
+          session.chat.approveInline(id);
+        }
         return JSON.stringify(this.view(session));
       },
       mail_state: () => JSON.stringify(this.mailbox()),
@@ -431,7 +443,7 @@ export class DesktopApp {
       await session.chat.send(text, context, {
         model: kind ? this.settings.get("agent") : this.settings.get("chat"),
         definitions: LOCAL_TOOLS,
-        runTool: (call) => this.runLocalTool(call),
+        runTool: (call, signal) => this.runLocalTool(call, signal),
       });
       for (const fact of recalled) {
         session.chat.messages.push({
@@ -539,9 +551,15 @@ export class DesktopApp {
     return { approvalId, draft, thread: message.thread };
   }
 
-  private async runLocalTool(call: ToolCall): Promise<string> {
+  private async runLocalTool(
+    call: ToolCall,
+    signal?: AbortSignal,
+  ): Promise<string> {
+    if (signal?.aborted) {
+      return JSON.stringify({ cancelled: true });
+    }
     if (call.name === "browser.open") {
-      return this.openBrowser(call.arguments);
+      return this.openBrowser(call.arguments, signal);
     }
     if (call.name === "revenue.read") {
       const view = this.revenue();
@@ -570,8 +588,14 @@ export class DesktopApp {
     throw new Error(`Unknown tool ${call.name}`);
   }
 
-  private async openBrowser(raw: string): Promise<string> {
+  private async openBrowser(
+    raw: string,
+    signal?: AbortSignal,
+  ): Promise<string> {
     const url = browserUrl(raw);
+    if (signal?.aborted) {
+      return JSON.stringify({ url, opened: false, cancelled: true });
+    }
     const session = this.ensure();
     const visit = this.browser.visit(url);
     const item = this.approvals.pending().at(-1);
@@ -583,21 +607,20 @@ export class DesktopApp {
         approvalId,
       });
     }
-    await visit;
-    const opened = this.browser.liveView().includes(`open ${url}`);
+    const outcome = await visit;
     const entry = session.chat.messages.find(
       (message) => message.approvalId === approvalId,
     );
-    if (entry) {
-      const mark = opened ? "(approved)" : "(denied)";
-      if (!entry.text.includes(mark)) {
-        entry.text = `${entry.text} ${mark}`;
-      }
+    if (outcome === "cancelled" || signal?.aborted) {
+      markApproval(entry, "(cancelled)");
+      return JSON.stringify({ url, opened: false, cancelled: true });
     }
-    if (!opened) {
+    if (outcome !== "opened") {
+      markApproval(entry, "(denied)");
       return JSON.stringify({ url, opened: false, title: "" });
     }
-    const title = await readPageTitle(url);
+    markApproval(entry, "(approved)");
+    const title = await readPageTitle(url, signal);
     return JSON.stringify({ url, opened: true, title });
   }
 
@@ -804,13 +827,34 @@ function browserUrl(raw: string): string {
   return new URL(text).toString();
 }
 
-async function readPageTitle(url: string): Promise<string> {
+function settled(text: string): boolean {
+  return (
+    text.includes("(approved)") ||
+    text.includes("(denied)") ||
+    text.includes("(cancelled)")
+  );
+}
+
+function markApproval(entry: { text: string } | undefined, mark: string): void {
+  if (!entry || entry.text.includes(mark)) {
+    return;
+  }
+  entry.text = `${entry.text} ${mark}`;
+}
+
+async function readPageTitle(
+  url: string,
+  signal?: AbortSignal,
+): Promise<string> {
   try {
-    const response = await fetch(url);
+    const response = await fetch(url, { signal });
     const html = (await response.text()).slice(0, 50_000);
     const match = /<title[^>]*>([^<]*)<\/title>/i.exec(html);
     return (match?.[1] ?? "").replaceAll(/\s+/g, " ").trim();
-  } catch {
+  } catch (error) {
+    if (signal?.aborted) {
+      throw error;
+    }
     return "";
   }
 }

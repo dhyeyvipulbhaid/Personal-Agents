@@ -141,17 +141,29 @@ async function readStream(
   if (!reader) {
     return response.text();
   }
+  if (signal?.aborted) {
+    await reader.cancel().catch(() => {});
+    throw new DOMException("The operation was aborted.", "AbortError");
+  }
   const decoder = new TextDecoder();
   let text = "";
-  for (;;) {
-    if (signal?.aborted) {
-      throw new DOMException("The operation was aborted.", "AbortError");
+  const cancel = () => {
+    reader.cancel().catch(() => {});
+  };
+  signal?.addEventListener("abort", cancel);
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (signal?.aborted) {
+        throw new DOMException("The operation was aborted.", "AbortError");
+      }
+      if (done) {
+        return text + decoder.decode();
+      }
+      text += decoder.decode(value, { stream: true });
     }
-    const { done, value } = await reader.read();
-    if (done) {
-      return text + decoder.decode();
-    }
-    text += decoder.decode(value, { stream: true });
+  } finally {
+    signal?.removeEventListener("abort", cancel);
   }
 }
 
