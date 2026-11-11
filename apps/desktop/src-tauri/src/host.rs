@@ -120,6 +120,14 @@ pub async fn host_version(host: tauri::State<'_, HostHandle>) -> Result<String, 
 }
 
 #[tauri::command]
+pub async fn widgets(host: tauri::State<'_, HostHandle>) -> Result<String, String> {
+    let host = host.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || host.call_when_ready("widgets"))
+        .await
+        .map_err(|err| err.to_string())?
+}
+
+#[tauri::command]
 pub fn note_displayed_host_version(
     host: tauri::State<'_, HostHandle>,
     version: String,

@@ -3,6 +3,7 @@ fn main() {
         tauri_build::AppManifest::new().commands(&[
             "host_version",
             "note_displayed_host_version",
+            "widgets",
         ]),
     );
     tauri_build::try_build(attributes).expect("failed to run tauri build");

@@ -19,7 +19,8 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             host::host_version,
-            host::note_displayed_host_version
+            host::note_displayed_host_version,
+            host::widgets
         ])
         .build(tauri::generate_context!())
         .expect("failed to open the Personal Agents window")

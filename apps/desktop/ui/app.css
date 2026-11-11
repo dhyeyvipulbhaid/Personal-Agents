@@ -5,6 +5,19 @@ body {
   font-family: "Segoe UI", sans-serif;
 }
 
+html[data-theme="light"] {
+  color-scheme: light;
+}
+
+html[data-theme="dark"] {
+  color-scheme: dark;
+}
+
+html[data-theme="dark"] body {
+  background: #1c1915;
+  color: #f4f1ea;
+}
+
 main {
   padding: 48px;
 }
@@ -16,6 +29,23 @@ h1 {
 }
 
 p {
-  margin: 0;
+  margin: 0 0 16px;
   font-size: 18px;
+}
+
+label {
+  margin-right: 8px;
+}
+
+select {
+  font: inherit;
+}
+
+.widget-frame {
+  display: block;
+  width: 280px;
+  height: 120px;
+  border: 1px solid currentColor;
+  border-radius: 8px;
+  background: transparent;
 }

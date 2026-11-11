@@ -52,6 +52,35 @@ test("the window can ask for the host version", async () => {
   expect(build).toContain("note_displayed_host_version");
 });
 
+test("the main page frames plugin widgets and switches theme", async () => {
+  const html = await Bun.file(
+    new URL("../ui/index.html", import.meta.url),
+  ).text();
+  const script = await Bun.file(
+    new URL("../ui/main.js", import.meta.url),
+  ).text();
+  const capabilities = (await Bun.file(
+    new URL("../src-tauri/capabilities/default.json", import.meta.url),
+  ).json()) as { permissions: string[] };
+  const config = await readConfig();
+  const build = await Bun.file(
+    new URL("../src-tauri/build.rs", import.meta.url),
+  ).text();
+
+  expect(html).toContain('id="theme"');
+  expect(html).toContain('value="system"');
+  expect(html).toContain('value="light"');
+  expect(html).toContain('value="dark"');
+  expect(html).toContain("Follow system");
+  expect(html).toContain('id="widgets"');
+  expect(script).toContain('invoke("widgets")');
+  expect(script).toContain('setAttribute("sandbox", "")');
+  expect(script).toContain("__PA_THEME__");
+  expect(config.app.security.csp).toContain("style-src 'self' 'unsafe-inline'");
+  expect(capabilities.permissions).toContain("allow-widgets");
+  expect(build).toContain("widgets");
+});
+
 test("packaging is per-user and unsigned", async () => {
   const config = await readConfig();
   const cargo = await Bun.file(
@@ -80,7 +109,7 @@ async function readConfig(): Promise<{
   identifier: string;
   mainBinaryName: string;
   build: { frontendDist: string; devUrl?: string };
-  app: { withGlobalTauri: boolean };
+  app: { withGlobalTauri: boolean; security: { csp: string } };
   bundle: {
     active: boolean;
     publisher: string;
