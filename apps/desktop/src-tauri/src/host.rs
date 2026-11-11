@@ -253,6 +253,25 @@ async fn call_host_params(
 }
 
 #[tauri::command]
+pub async fn browser_activity(
+    host: tauri::State<'_, HostHandle>,
+    visible: Option<bool>,
+) -> Result<String, String> {
+    call_host_params(
+        host,
+        "browser_activity",
+        serde_json::json!({ "visible": visible.unwrap_or(true) }),
+        CALL_TIMEOUT,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn browser_stop(host: tauri::State<'_, HostHandle>) -> Result<String, String> {
+    call_host(host, "browser_stop").await
+}
+
+#[tauri::command]
 pub async fn revenue_status(host: tauri::State<'_, HostHandle>) -> Result<String, String> {
     call_host(host, "revenue_status").await
 }
