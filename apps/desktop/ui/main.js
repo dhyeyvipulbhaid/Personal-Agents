@@ -9,6 +9,11 @@ let widgetError = "";
 let revenueState = { error: "" };
 let mailState = { error: "" };
 let approvalState = { error: "", count: 0 };
+let browserState = null;
+let browserLocked = "";
+let browserStopping = false;
+let browserTimer = 0;
+let browserOnScreen = true;
 
 function themedHtml(html, theme) {
   const safe = theme === "dark" ? "dark" : "light";
@@ -183,6 +188,182 @@ function listCard(title, error, items, action, href, empty) {
   return article;
 }
 
+function browserCard() {
+  const article = card("Browser activity", "good", "");
+  article.id = "browser-activity";
+  const state = browserState;
+  if (!state || (!state.active && !state.pendingApproval)) {
+    const note = document.createElement("p");
+    note.className = "muted";
+    note.id = "browser-idle";
+    const recent = Array.isArray(state?.recentActions)
+      ? state.recentActions.slice(0, 5)
+      : [];
+    if (state?.error) {
+      note.className = "notice";
+      note.textContent = state.error;
+    } else {
+      note.textContent =
+        recent.length === 0
+          ? "No browser activity yet."
+          : "Recent browser actions";
+    }
+    article.append(note);
+    if (recent.length > 0) {
+      const list = document.createElement("ul");
+      list.className = "plain-list";
+      for (const action of recent) {
+        const item = document.createElement("li");
+        const anchor = link(
+          "activity.html",
+          action.summary || "Browser action",
+        );
+        item.append(anchor);
+        list.append(item);
+      }
+      article.append(list);
+    }
+    return article;
+  }
+  if (state.pendingApproval && browserLocked !== state.pendingApproval.id) {
+    const summary = document.createElement("p");
+    summary.id = "browser-pending";
+    summary.textContent = state.pendingApproval.summary;
+    const row = actions(
+      button("Approve", "", () =>
+        decideBrowser(
+          state.pendingApproval.id,
+          "approve",
+          state.pendingApproval.summary,
+        ),
+      ),
+      button("Deny", "danger", () =>
+        decideBrowser(
+          state.pendingApproval.id,
+          "deny",
+          state.pendingApproval.summary,
+        ),
+      ),
+    );
+    article.append(summary, row);
+    return article;
+  }
+  if (browserLocked && state.pendingApproval) {
+    const status = document.createElement("p");
+    status.className = "muted";
+    status.id = "browser-status";
+    status.textContent = browserLockedText;
+    article.append(status);
+    return article;
+  }
+  if (browserStopping) {
+    article.append(
+      siteLine(state),
+      stepLine(state),
+      actions(disabledButton("Stopping…")),
+    );
+    return article;
+  }
+  if (state.thumbnail) {
+    const img = document.createElement("img");
+    img.className = "browser-thumb";
+    img.alt = state.site || "Browser";
+    img.src = state.thumbnail.startsWith("data:")
+      ? state.thumbnail
+      : `data:image/jpeg;base64,${state.thumbnail}`;
+    article.append(img);
+  }
+  article.append(
+    siteLine(state),
+    stepLine(state),
+    actions(button("Stop", "danger", () => stopBrowser())),
+  );
+  return article;
+}
+
+function siteLine(state) {
+  const site = document.createElement("p");
+  site.id = "browser-site";
+  site.textContent = state.site || state.url || "";
+  return site;
+}
+
+function stepLine(state) {
+  const step = document.createElement("p");
+  step.className = "muted";
+  step.id = "browser-step";
+  step.textContent = state.currentStep || "";
+  return step;
+}
+
+function disabledButton(label) {
+  const node = document.createElement("button");
+  node.type = "button";
+  node.disabled = true;
+  node.textContent = label;
+  return node;
+}
+
+let browserLockedText = "";
+
+function progressLine(summary) {
+  const text = String(summary ?? "");
+  const click = /click "([^"]+)"/i.exec(text);
+  if (click) {
+    return `Clicking "${click[1]}"…`;
+  }
+  if (/\btype\b/i.test(text)) {
+    return "Typing…";
+  }
+  const open = /(?:visit|navigate to|open)\s+(\S+)/i.exec(text);
+  if (open?.[1]) {
+    return `Opening ${open[1].replace(/[.,]+$/, "")}…`;
+  }
+  return "Working…";
+}
+
+function decideBrowser(id, action, summary) {
+  if (browserLocked) {
+    return;
+  }
+  browserLocked = id;
+  browserLockedText = action === "deny" ? "Denied" : progressLine(summary);
+  renderDashboard();
+  window.pa
+    .invoke("chat_approve", { id, action })
+    .then(() => showBrowser())
+    .catch((error) => {
+      browserLocked = "";
+      browserState = {
+        ...(browserState || {}),
+        error: window.pa.explain(error, "Browser"),
+      };
+      renderDashboard();
+    });
+}
+
+function stopBrowser() {
+  if (browserStopping) {
+    return;
+  }
+  browserStopping = true;
+  renderDashboard();
+  window.pa
+    .invoke("browser_stop")
+    .then(() => {
+      browserStopping = false;
+      return showBrowser();
+    })
+    .catch((error) => {
+      browserStopping = false;
+      browserState = {
+        ...(browserState || {}),
+        error: window.pa.explain(error, "Browser"),
+      };
+      renderDashboard();
+    });
+}
+
 function approvalCard() {
   const article = card(
     "Approvals",
@@ -216,7 +397,13 @@ function renderDashboard() {
   for (const widget of widgetPayload) {
     widgetsRoot.append(widgetCard(widget));
   }
-  widgetsRoot.append(revenueCard(), digestCard(), followCard(), approvalCard());
+  widgetsRoot.append(
+    browserCard(),
+    revenueCard(),
+    digestCard(),
+    followCard(),
+    approvalCard(),
+  );
 }
 
 function applyLayout() {
@@ -325,4 +512,48 @@ showWidgets().catch((error) => {
 });
 showRevenue();
 showMail();
+function browserVisible() {
+  return browserOnScreen && document.visibilityState !== "hidden";
+}
+
+async function showBrowser() {
+  try {
+    const parsed = JSON.parse(
+      await window.pa.invoke("browser_activity", { visible: browserVisible() }),
+    );
+    if (parsed && browserLocked && !parsed.pendingApproval) {
+      browserLocked = "";
+    }
+    browserState = parsed;
+  } catch (error) {
+    browserState = { error: window.pa.explain(error, "Browser") };
+  }
+  renderDashboard();
+}
+
+function armBrowserWatch() {
+  window.clearInterval(browserTimer);
+  if (!browserVisible()) {
+    window.pa.invoke("browser_activity", { visible: false }).catch(() => {});
+    return;
+  }
+  browserTimer = window.setInterval(() => {
+    showBrowser().catch(() => {});
+  }, 1000);
+  showBrowser().catch(() => {});
+}
+
+document.addEventListener("visibilitychange", () => {
+  armBrowserWatch();
+});
+
+const browserWatch = new IntersectionObserver((entries) => {
+  browserOnScreen = entries.some((entry) => entry.isIntersecting);
+  armBrowserWatch();
+});
+
 showApprovals();
+armBrowserWatch();
+if (widgetsRoot) {
+  browserWatch.observe(widgetsRoot);
+}

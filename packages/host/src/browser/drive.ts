@@ -4,6 +4,7 @@ import { createServer } from "node:net";
 import { homedir } from "node:os";
 import { join, posix, win32 } from "node:path";
 import type { ActivityEntry, Approvals } from "../approvals/approvals.ts";
+import { thumbParams } from "./preview.ts";
 import { READABLE_CHAR_LIMIT } from "./read.ts";
 import type { BrowserSession } from "./session.ts";
 
@@ -46,10 +47,55 @@ type Gate = "approved" | "denied" | "cancelled";
 export class BrowserDrive {
   private client: CdpClient | null = null;
   private currentUrl = "";
+  private step = "";
+  private lastAction = 0;
+  private readonly recent: { at: string; summary: string }[] = [];
   private readonly approvedHosts = new Set<string>();
   private shots = 0;
 
   constructor(private readonly options: DriveOptions) {}
+
+  hasSession(): boolean {
+    return this.client !== null && this.currentUrl.length > 0;
+  }
+
+  pageUrl(): string {
+    return this.currentUrl;
+  }
+
+  site(): string {
+    return this.hostLabel();
+  }
+
+  currentStep(): string {
+    return this.step;
+  }
+
+  lastActionAt(): number {
+    return this.lastAction;
+  }
+
+  recentActions(): { at: string; summary: string }[] {
+    return this.recent.slice(0, 5);
+  }
+
+  async captureThumb(): Promise<string> {
+    if (!this.client) {
+      return "";
+    }
+    const shot = (await this.client.send(
+      "Page.captureScreenshot",
+      thumbParams(),
+    )) as { data?: string };
+    return typeof shot.data === "string" ? shot.data : "";
+  }
+
+  async halt(): Promise<void> {
+    this.currentUrl = "";
+    this.step = "";
+    await this.close();
+    this.log("Stopped the browser");
+  }
 
   async close(): Promise<void> {
     const client = this.client;
@@ -70,13 +116,14 @@ export class BrowserDrive {
     }
     const host = new URL(url).host;
     const summary = `navigate to ${host}`;
+    this.noteStep(summary);
     if (!this.canDrive()) {
       this.log(`${this.blockedMessage()} ${summary} did not run.`);
       return { ok: false, allowed: false, url, message: this.blockedMessage() };
     }
     const decision = await this.gate(summary, "browser.navigate", url, signal);
     if (decision !== "approved") {
-      return this.refused(decision, "navigate", url);
+      return this.refused(decision, "navigate", url, undefined, summary);
     }
     if (this.halted(signal)) {
       return this.stopped(url);
@@ -126,6 +173,7 @@ export class BrowserDrive {
     }
     const where = this.hostLabel();
     const summary = where ? `click "${label}" on ${where}` : `click "${label}"`;
+    this.noteStep(summary);
     if (!this.canDrive()) {
       this.log(`${this.blockedMessage()} ${summary} did not run.`);
       return { ok: false, allowed: false, message: this.blockedMessage() };
@@ -140,7 +188,7 @@ export class BrowserDrive {
     }
     const decision = await this.gate(summary, "browser.click", label, signal);
     if (decision !== "approved") {
-      return this.refused(decision, "click", this.currentUrl, label);
+      return this.refused(decision, "click", this.currentUrl, label, summary);
     }
     if (this.halted(signal)) {
       return this.stopped();
@@ -183,6 +231,7 @@ export class BrowserDrive {
     const summary = where
       ? `type "${typed}" into "${field}" on ${where}`
       : `type "${typed}" into "${field}"`;
+    this.noteStep(summary);
     if (!this.canDrive()) {
       this.log(`${this.blockedMessage()} ${summary} did not run.`);
       return { ok: false, allowed: false, message: this.blockedMessage() };
@@ -197,7 +246,7 @@ export class BrowserDrive {
     }
     const decision = await this.gate(summary, "browser.type", text, signal);
     if (decision !== "approved") {
-      return this.refused(decision, "type", this.currentUrl, field);
+      return this.refused(decision, "type", this.currentUrl, field, summary);
     }
     if (this.halted(signal)) {
       return this.stopped();
@@ -416,9 +465,13 @@ export class BrowserDrive {
     action: "navigate" | "click" | "type",
     url?: string,
     target?: string,
+    summary?: string,
   ): DriveResult {
     if (decision === "cancelled") {
       return this.stopped(url);
+    }
+    if (summary) {
+      this.log(`Denied: ${summary}`);
     }
     return {
       ok: false,
@@ -448,9 +501,19 @@ export class BrowserDrive {
     return new URL(this.currentUrl).host;
   }
 
+  private noteStep(summary: string): void {
+    this.step = summary;
+  }
+
   private log(summary: string): void {
+    const at = new Date(this.now()).toISOString();
+    this.lastAction = this.now();
+    this.recent.unshift({ at, summary });
+    if (this.recent.length > 5) {
+      this.recent.length = 5;
+    }
     this.options.audit({
-      at: new Date(this.now()).toISOString(),
+      at,
       summary,
       decision: "browser",
     });

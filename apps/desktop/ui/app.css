@@ -602,6 +602,14 @@ button.danger {
   margin: 0 0 12px;
 }
 
+.browser-thumb {
+  display: block;
+  width: 100%;
+  max-width: 480px;
+  border-radius: 8px;
+  background: var(--sunken);
+}
+
 .inline-approval {
   max-width: 560px;
 }

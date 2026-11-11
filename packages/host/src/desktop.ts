@@ -8,6 +8,7 @@ import {
   connectChrome,
   type DriveResult,
 } from "./browser/drive.ts";
+import { type BrowserActivity, BrowserPreview } from "./browser/preview.ts";
 import { BrowserSession } from "./browser/session.ts";
 import {
   previewWidget,
@@ -139,6 +140,7 @@ export type DesktopOptions = {
   now?: () => number;
   audit?: (entry: ActivityEntry) => void;
   chromePath?: string | null;
+  onBrowserActivity?: (event: BrowserActivity) => void;
   browserConnect?: (url: string) => Promise<{
     send(method: string, params?: Record<string, unknown>): Promise<unknown>;
     close(): Promise<void>;
@@ -166,6 +168,7 @@ export class DesktopApp {
   private readonly openReplies = new Map<string, string>();
   private readonly browser: BrowserSession;
   private readonly drive: BrowserDrive;
+  private readonly preview: BrowserPreview;
   private readonly audit: (entry: ActivityEntry) => void;
   private chatTurn = 0;
 
@@ -203,6 +206,20 @@ export class DesktopApp {
             url,
           )),
     });
+    this.preview = new BrowserPreview(
+      {
+        sessionOpen: () => this.drive.hasSession(),
+        lastActionAt: () => this.drive.lastActionAt(),
+        currentStep: () => this.drive.currentStep(),
+        pageUrl: () => this.drive.pageUrl(),
+        site: () => this.drive.site(),
+        pendingApproval: () => this.browserPending(),
+        recentActions: () => this.drive.recentActions(),
+        capture: () => this.drive.captureThumb(),
+      },
+      options.onBrowserActivity ?? (() => {}),
+      this.now,
+    );
     this.builder = new WidgetBuilder(
       this.kernel,
       this.approvals,
@@ -217,6 +234,7 @@ export class DesktopApp {
   }
 
   close(): void {
+    this.preview.stop();
     this.kernel.close();
     void this.drive.close();
   }
@@ -233,6 +251,17 @@ export class DesktopApp {
         });
       },
       approvals: () => JSON.stringify(this.approvals.pending()),
+      browser_activity: (params) => {
+        const record = asRecord(params);
+        const visible = record.visible !== false && record.visible !== "false";
+        return JSON.stringify(this.preview.watch(visible));
+      },
+      browser_stop: async () => {
+        this.approvals.cancelTask("browser");
+        await this.drive.halt();
+        this.preview.stop();
+        return JSON.stringify(this.preview.snapshot());
+      },
       approval_act: (params) => JSON.stringify(act(this.approvals, params)),
       revenue_status: () => JSON.stringify(this.revenue()),
       capabilities: async () => JSON.stringify(await this.capabilityReport()),
@@ -893,6 +922,16 @@ export class DesktopApp {
       agent: this.settings.get("agent"),
       builder: this.settings.get("builder"),
     };
+  }
+
+  private browserPending(): { id: string; summary: string } | undefined {
+    const item = this.approvals
+      .pending()
+      .find((entry) => entry.capability.startsWith("browser."));
+    if (!item) {
+      return undefined;
+    }
+    return { id: item.id, summary: item.summary };
   }
 
   private failText(error: unknown, model: string): string {
