@@ -8,13 +8,15 @@
   ],
   "scripts": {
     "lint": "biome check .",
-    "typecheck": "tsc -p apps/desktop --noEmit && tsc -p packages/host --noEmit",
+    "typecheck": "tsc -p apps/desktop --noEmit && tsc -p packages/host --noEmit && tsc -p e2e --noEmit",
     "test": "bun test",
+    "test:e2e": "bun e2e/widget-theme.ts",
     "build:host": "bun scripts/build-host-sidecar.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.6",
     "@types/bun": "1.4.4",
+    "playwright": "1.65.0",
     "typescript": "7.0.2"
   }
 }

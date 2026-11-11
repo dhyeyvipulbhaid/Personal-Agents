@@ -10,7 +10,7 @@
   "app": {
     "withGlobalTauri": true,
     "security": {
-      "csp": "default-src 'self'"
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'"
     }
   },
   "bundle": {
