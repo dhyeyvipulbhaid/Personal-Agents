@@ -96,6 +96,12 @@ export class BrowserSession {
     return "opened";
   }
 
+  note(step: string): void {
+    if (!this.stopped) {
+      this.steps.push(step);
+    }
+  }
+
   runScript(pageSteps: string[]): void {
     for (const step of pageSteps) {
       if (this.stopped) {
