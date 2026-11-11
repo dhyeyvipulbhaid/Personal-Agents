@@ -1,6 +1,10 @@
 {
   "identifier": "default",
-  "description": "The main window shows the bundled page.",
+  "description": "The main window shows the bundled page and the host version.",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": [
+    "core:default",
+    "allow-host-version",
+    "allow-note-displayed-host-version"
+  ]
 }

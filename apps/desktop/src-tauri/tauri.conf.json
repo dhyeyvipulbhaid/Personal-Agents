@@ -8,6 +8,7 @@
     "frontendDist": "../ui"
   },
   "app": {
+    "withGlobalTauri": true,
     "security": {
       "csp": "default-src 'self'"
     }
@@ -16,6 +17,7 @@
     "active": true,
     "publisher": "Personal Agents",
     "targets": ["nsis", "app"],
+    "externalBin": ["binaries/agent-host"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
