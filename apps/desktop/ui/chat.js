@@ -179,6 +179,7 @@ function setSending(active) {
 }
 
 async function refresh() {
+  const seen = round;
   const state = normalize(
     JSON.parse(
       await window.pa.invoke("chat_state", {
@@ -186,11 +187,16 @@ async function refresh() {
       }),
     ),
   );
+  if (seen !== round) {
+    return state;
+  }
   activeId = state.activeId || activeId;
   renderSessions(state);
   renderMessages(state.messages);
   if (sending && state.streaming) {
     setSending(true);
+  } else if (!sending) {
+    setSending(false);
   }
   if (state.notice) {
     modelNotice.textContent = state.notice;
