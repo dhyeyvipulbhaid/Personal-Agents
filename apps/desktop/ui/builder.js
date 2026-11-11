@@ -24,8 +24,10 @@ async function plan(request) {
   status.textContent = "";
   const parsed = JSON.parse(await window.pa.invoke("builder_plan", request));
   paintSteps(parsed.steps || []);
-  const previewHtml = themed(parsed.preview || "");
-  preview.srcdoc = `<!doctype html><html><body style="margin:16px;font:600 28px Inter,system-ui,sans-serif">${previewHtml}</body></html>`;
+  preview.srcdoc = window.pa.frameDocument(
+    themed(parsed.preview || ""),
+    window.pa.theme(),
+  );
   review.hidden = false;
 }
 

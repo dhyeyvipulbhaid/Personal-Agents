@@ -37,13 +37,14 @@ async function showFacts() {
 
 document.getElementById("remember").addEventListener("submit", (event) => {
   event.preventDefault();
-  const data = new FormData(event.currentTarget);
+  const form = event.currentTarget;
+  const data = new FormData(form);
   const text = String(data.get("text") ?? "").trim();
   status.textContent = "";
   window.pa
     .invoke("memory_remember", { text })
     .then(() => {
-      event.currentTarget.reset();
+      form.reset();
       return showFacts();
     })
     .catch((error) => {

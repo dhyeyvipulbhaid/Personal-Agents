@@ -119,7 +119,9 @@ function render(next) {
     buttons.className = "button-row";
     buttons.append(
       button("Approve", "", async () => {
-        await act("edit", item.id, { draft: evidence.value });
+        if (evidence.value !== item.draft) {
+          await act("edit", item.id, { draft: evidence.value });
+        }
         await act("approve", item.id, { scope: scope.value });
       }),
       button("Edit", "ghost", () =>
