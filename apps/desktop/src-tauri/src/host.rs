@@ -102,6 +102,25 @@ impl HostHandle {
         self.inner.audit.clone()
     }
 
+    fn call_params_when_ready(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<String, String> {
+        let deadline = Instant::now() + READY_TIMEOUT;
+        let mut last = "agent host is not running".to_string();
+        while Instant::now() < deadline {
+            match self.inner.call_params(method, params.clone()) {
+                Ok(value) => return Ok(value),
+                Err(err) => {
+                    last = err;
+                    thread::sleep(Duration::from_millis(50));
+                }
+            }
+        }
+        Err(last)
+    }
+
     fn call_when_ready(&self, method: &str) -> Result<String, String> {
         let deadline = Instant::now() + READY_TIMEOUT;
         let mut last = "agent host is not running".to_string();
@@ -175,7 +194,7 @@ pub async fn approval_act(
         "scope": scope,
         "until": until,
     });
-    tauri::async_runtime::spawn_blocking(move || host.call_params("approval_act", params))
+    tauri::async_runtime::spawn_blocking(move || host.call_params_when_ready("approval_act", params))
         .await
         .map_err(|err| err.to_string())?
 }

@@ -23,14 +23,18 @@ test("the user installer checks the sha256 and only the user path", () => {
         "Bypass",
         "-File",
         join(root, "install.ps1"),
-        "-File",
+        "-Bundle",
         bundle,
         "-Sha",
         sha,
       ],
       { env: { ...process.env, PA_HOME: home, PA_OLLAMA_STATUS: "stopped" } },
     );
-    expect(good.status).toBe(0);
+    if (good.status !== 0) {
+      throw new Error(
+        `installer failed\n${good.stdout.toString()}\n${good.stderr.toString()}`,
+      );
+    }
     expect(good.stdout.toString()).toContain("https://ollama.com/download");
     expect(readFileSync(join(home, "user-path.txt"), "utf8")).toContain(
       "Personal Agents",
@@ -44,7 +48,7 @@ test("the user installer checks the sha256 and only the user path", () => {
         "Bypass",
         "-File",
         join(root, "install.ps1"),
-        "-File",
+        "-Bundle",
         bundle,
         "-Sha",
         "00",
