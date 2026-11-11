@@ -10,6 +10,9 @@ const app = new DesktopApp({
   audit: (entry) => {
     writeSync(1, encodeNotification("audit", entry));
   },
+  onBrowserActivity: (payload) => {
+    writeSync(1, encodeNotification("browser_activity", payload));
+  },
 });
 
 try {

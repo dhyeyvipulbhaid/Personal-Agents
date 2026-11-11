@@ -10,7 +10,7 @@
     "lint": "biome check .",
     "typecheck": "tsc -p apps/desktop --noEmit && tsc -p packages/host --noEmit && tsc -p e2e --noEmit",
     "test": "bun test",
-    "test:e2e": "bun e2e/widget-theme.ts && bun e2e/activity.ts && bun e2e/approvals.ts && bun e2e/ollama.ts && bun e2e/chat.ts && bun e2e/capabilities.ts && bun e2e/memory.ts && bun e2e/mail-draft.ts && bun e2e/host-tools.ts && bun e2e/browser-title.ts && bun e2e/browser-read.ts && bun e2e/browser-drive.ts && bun e2e/chat-controls.ts && bun e2e/approval-feedback.ts && bun e2e/host-pages.ts && bun e2e/screenshots.ts",
+    "test:e2e": "bun e2e/widget-theme.ts && bun e2e/activity.ts && bun e2e/approvals.ts && bun e2e/ollama.ts && bun e2e/chat.ts && bun e2e/capabilities.ts && bun e2e/memory.ts && bun e2e/mail-draft.ts && bun e2e/host-tools.ts && bun e2e/browser-title.ts && bun e2e/browser-read.ts && bun e2e/browser-drive.ts && bun e2e/chat-controls.ts && bun e2e/approval-feedback.ts && bun e2e/home-browser.ts && bun e2e/host-pages.ts && bun e2e/screenshots.ts",
     "build:host": "bun scripts/build-host-sidecar.ts"
   },
   "devDependencies": {
