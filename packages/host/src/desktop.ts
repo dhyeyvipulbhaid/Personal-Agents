@@ -201,11 +201,10 @@ export class DesktopApp {
       fetchPage: (url, signal) => loadPageHtml(url, signal),
       connect:
         options.browserConnect ??
-        ((url) =>
+        ((_url) =>
           connectChrome(
             executable ?? "",
             join(options.dataDir, "chrome-profile"),
-            url,
           )),
     });
     this.preview = new BrowserPreview(

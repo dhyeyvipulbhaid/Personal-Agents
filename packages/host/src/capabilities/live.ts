@@ -144,6 +144,9 @@ export function adviceFor(check: Check): string {
   if (check.name === "ollama" && check.cause === "no models") {
     return "Run `ollama pull qwen3:4b`, `ollama pull qwen3:8b`, and `ollama pull qwen2.5-coder:7b`.";
   }
+  if (check.cause === "not installed" && check.name.includes("Chrome")) {
+    return "Install Google Chrome. Personal Agents will not open Safari or any other default browser.";
+  }
   if (check.cause === "not installed") {
     return "Install that browser, or use one that is already on this machine.";
   }
