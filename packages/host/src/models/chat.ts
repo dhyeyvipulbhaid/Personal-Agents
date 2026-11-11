@@ -208,9 +208,24 @@ function parsedArguments(raw: string): unknown {
 
 function replyFromTool(output: string): string {
   try {
-    const parsed = JSON.parse(output) as { opened?: boolean; title?: string };
+    const parsed = JSON.parse(output) as {
+      opened?: boolean;
+      title?: string;
+      text?: string;
+    };
     if (parsed.opened === false) {
       return "That visit was not allowed.";
+    }
+    if (
+      typeof parsed.text === "string" &&
+      parsed.text.length > 0 &&
+      parsed.text !== parsed.title
+    ) {
+      const title =
+        typeof parsed.title === "string" && parsed.title.length > 0
+          ? `${parsed.title}. `
+          : "";
+      return `${title}${parsed.text}`.slice(0, 2_000);
     }
     if (typeof parsed.title === "string" && parsed.title.length > 0) {
       return `The page title is ${parsed.title}.`;

@@ -282,6 +282,139 @@ test("a denied visit is one approval and the model says it was not allowed", asy
   }
 });
 
+const exampleStory =
+  "<!doctype html><html><head><title>Example Domain</title></head><body><main><h1>Example Domain</h1><p>This domain is for use in illustrative examples in documents.</p></main></body></html>";
+
+test("browser.read returns the page text after one approval", async () => {
+  const seen: ChatRequest[] = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input).includes("example.com")) {
+      return new Response(exampleStory);
+    }
+    return originalFetch(input, init);
+  }) as typeof fetch;
+  const { app, methods } = await harness(async (request) => {
+    seen.push(request);
+    if (request.tools?.some((tool) => tool.function.name === "browser.read")) {
+      return {
+        text: "",
+        toolCall: {
+          name: "browser.read",
+          arguments: JSON.stringify({ url: "https://example.com" }),
+        },
+      };
+    }
+    return {
+      text: "The page says this domain is for use in illustrative examples in documents.",
+    };
+  });
+  try {
+    const send = Promise.resolve(
+      methods.chat_send({ text: "what does example.com say?" }),
+    );
+    const first = await Promise.race([
+      send.then((raw) => ({ kind: "sent" as const, raw })),
+      waitForApproval(methods),
+    ]);
+    if (first.kind !== "approval") {
+      throw new Error("the read ended before its approval");
+    }
+    expect(seen[0]?.tools?.map((tool) => tool.function.name)).toContain(
+      "browser.read",
+    );
+    await methods.approval_act({
+      action: "approve",
+      id: first.id,
+      draft: "",
+      instruction: "",
+      scope: "once",
+      until: 0,
+    });
+    const state = JSON.parse(await send) as {
+      messages: { role: string; text: string }[];
+    };
+    const cards = state.messages.filter(
+      (message) => message.role === "approval",
+    );
+    expect(cards).toHaveLength(1);
+    expect(cards[0]?.text).toContain("visit example.com");
+    expect(cards[0]?.text).toContain("(approved)");
+    const tool = seen
+      .flatMap((request) => request.messages)
+      .find((message) => message.role === "tool");
+    expect(tool?.content).toContain("Example Domain");
+    expect(tool?.content).toContain("illustrative examples in documents");
+    expect(
+      state.messages
+        .filter((message) => message.role === "assistant")
+        .map((message) => message.text)
+        .join("\n"),
+    ).toContain("illustrative examples");
+  } finally {
+    globalThis.fetch = originalFetch;
+    app.close();
+  }
+});
+
+test("a denied browser.read does not return the page text", async () => {
+  let fetches = 0;
+  const seen: ChatRequest[] = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input).includes("example.com")) {
+      fetches += 1;
+      return new Response(
+        "<title>Secret</title><main><p>hidden ledger</p></main>",
+      );
+    }
+    return originalFetch(input, init);
+  }) as typeof fetch;
+  const { app, methods } = await harness(async (request) => {
+    seen.push(request);
+    if (request.tools && request.tools.length > 0) {
+      return {
+        text: "",
+        toolCall: {
+          name: "browser.read",
+          arguments: JSON.stringify({ url: "https://example.com/secret" }),
+        },
+      };
+    }
+    return { text: "That visit was not allowed." };
+  });
+  try {
+    const send = Promise.resolve(
+      methods.chat_send({ text: "what does example.com say?" }),
+    );
+    const first = await Promise.race([
+      send.then(() => ({ kind: "sent" as const })),
+      waitForApproval(methods),
+    ]);
+    if (first.kind !== "approval") {
+      throw new Error("the read ended before its approval");
+    }
+    await methods.approval_act({
+      action: "deny",
+      id: first.id,
+      draft: "",
+      instruction: "",
+      scope: "once",
+      until: 0,
+    });
+    await send;
+    expect(fetches).toBe(0);
+    const tool = seen
+      .flatMap((request) => request.messages)
+      .find((message) => message.role === "tool");
+    expect(tool?.content).toContain('"opened":false');
+    expect(tool?.content ?? "").not.toContain("hidden ledger");
+  } finally {
+    globalThis.fetch = originalFetch;
+    app.close();
+  }
+});
+
 test("a follow-up model error is shown in the chat", async () => {
   const { app, methods } = await browserHarness(async (body) => {
     if (body.tools && body.tools.length > 0) {

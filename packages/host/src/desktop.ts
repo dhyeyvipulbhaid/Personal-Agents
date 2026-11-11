@@ -558,7 +558,7 @@ export class DesktopApp {
     if (signal?.aborted) {
       return JSON.stringify({ cancelled: true });
     }
-    if (call.name === "browser.open") {
+    if (call.name === "browser.open" || call.name === "browser.read") {
       return this.openBrowser(call.arguments, signal);
     }
     if (call.name === "revenue.read") {
@@ -597,7 +597,9 @@ export class DesktopApp {
       return JSON.stringify({ url, opened: false, cancelled: true });
     }
     const session = this.ensure();
-    const visit = this.browser.visit(url);
+    const pending = this.browser.read(url, (target) =>
+      loadPageHtml(target, signal),
+    );
     const item = this.approvals.pending().at(-1);
     const approvalId = item?.capability === "browser.visit" ? item.id : "";
     if (approvalId.length > 0 && item) {
@@ -607,21 +609,33 @@ export class DesktopApp {
         approvalId,
       });
     }
-    const outcome = await visit;
+    const result = await pending;
     const entry = session.chat.messages.find(
       (message) => message.approvalId === approvalId,
     );
-    if (outcome === "cancelled" || signal?.aborted) {
+    if (result.cancelled || signal?.aborted) {
       markApproval(entry, "(cancelled)");
-      return JSON.stringify({ url, opened: false, cancelled: true });
+      return JSON.stringify({
+        url,
+        opened: false,
+        cancelled: true,
+        title: "",
+        headings: [],
+        text: "",
+      });
     }
-    if (outcome !== "opened") {
+    if (!result.opened) {
       markApproval(entry, "(denied)");
-      return JSON.stringify({ url, opened: false, title: "" });
+      return JSON.stringify({
+        url,
+        opened: false,
+        title: "",
+        headings: [],
+        text: "",
+      });
     }
     markApproval(entry, "(approved)");
-    const title = await readPageTitle(url, signal);
-    return JSON.stringify({ url, opened: true, title });
+    return JSON.stringify(result);
   }
 
   private groundRevenue(session: Session): void {
@@ -775,7 +789,20 @@ const LOCAL_TOOLS: ToolDefinition[] = [
     function: {
       name: "browser.open",
       description:
-        "Open a URL in the browser and return the page title. The first visit to a site waits for approval.",
+        "Open a URL and return its title, headings, and main text. The first visit to a site waits for approval.",
+      parameters: {
+        type: "object",
+        properties: { url: { type: "string" } },
+        required: ["url"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "browser.read",
+      description:
+        "Read a page and return its title, headings, and main text. The first visit to a site waits for approval. A later read of that site does not.",
       parameters: {
         type: "object",
         properties: { url: { type: "string" } },
@@ -806,7 +833,7 @@ function localQuestion(text: string): "revenue" | "mail" | "memory" | null {
 }
 
 function toolPrompt(): string {
-  return "You have tools. Call revenue.read for revenue.csv, mail.summary for the mailbox, memory.recall for saved facts, and browser.open to open a page and read its title. The first visit to a site waits for approval. Use the tools instead of saying you cannot open a browser or access a website.";
+  return "You have tools. Call revenue.read for revenue.csv, mail.summary for the mailbox, memory.recall for saved facts, and browser.read or browser.open to read a page. They return the title, headings, and main text. The first visit to a site waits for approval. Use the tools instead of saying you cannot open a browser or access a website.";
 }
 
 function browserUrl(raw: string): string {
@@ -836,21 +863,19 @@ function settled(text: string): boolean {
 }
 
 function markApproval(entry: { text: string } | undefined, mark: string): void {
-  if (!entry || entry.text.includes(mark)) {
+  if (!entry || settled(entry.text) || entry.text.includes(mark)) {
     return;
   }
   entry.text = `${entry.text} ${mark}`;
 }
 
-async function readPageTitle(
+async function loadPageHtml(
   url: string,
   signal?: AbortSignal,
 ): Promise<string> {
   try {
     const response = await fetch(url, { signal });
-    const html = (await response.text()).slice(0, 50_000);
-    const match = /<title[^>]*>([^<]*)<\/title>/i.exec(html);
-    return (match?.[1] ?? "").replaceAll(/\s+/g, " ").trim();
+    return (await response.text()).slice(0, 500_000);
   } catch (error) {
     if (signal?.aborted) {
       throw error;
