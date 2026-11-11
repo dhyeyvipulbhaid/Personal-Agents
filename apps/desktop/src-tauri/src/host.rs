@@ -14,7 +14,8 @@ use std::time::{Duration, Instant};
 
 use tauri::Manager;
 
-use crate::rpc::{encode_request, next_frame, parse_response};
+use crate::audit;
+use crate::rpc::{audit_line, encode_request_params, next_frame, parse_response};
 
 const CALL_TIMEOUT: Duration = Duration::from_secs(10);
 const READY_TIMEOUT: Duration = Duration::from_secs(20);
@@ -27,6 +28,7 @@ pub struct HostHandle {
 struct HostInner {
     bin: PathBuf,
     log: Mutex<std::fs::File>,
+    audit: PathBuf,
     active: Mutex<Option<Active>>,
     pid: Mutex<Option<u32>>,
     stopped: AtomicBool,
@@ -63,6 +65,7 @@ impl HostHandle {
         let inner = Arc::new(HostInner {
             bin,
             log: Mutex::new(log),
+            audit: dir.join("audit.log"),
             active: Mutex::new(None),
             pid: Mutex::new(None),
             stopped: AtomicBool::new(false),
@@ -95,6 +98,10 @@ impl HostHandle {
         Ok(())
     }
 
+    fn audit_path(&self) -> PathBuf {
+        self.inner.audit.clone()
+    }
+
     fn call_when_ready(&self, method: &str) -> Result<String, String> {
         let deadline = Instant::now() + READY_TIMEOUT;
         let mut last = "agent host is not running".to_string();
@@ -123,6 +130,52 @@ pub async fn host_version(host: tauri::State<'_, HostHandle>) -> Result<String, 
 pub async fn widgets(host: tauri::State<'_, HostHandle>) -> Result<String, String> {
     let host = host.inner().clone();
     tauri::async_runtime::spawn_blocking(move || host.call_when_ready("widgets"))
+        .await
+        .map_err(|err| err.to_string())?
+}
+
+#[tauri::command]
+pub async fn ollama_status(host: tauri::State<'_, HostHandle>) -> Result<String, String> {
+    let host = host.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || host.call_when_ready("ollama"))
+        .await
+        .map_err(|err| err.to_string())?
+}
+
+#[tauri::command]
+pub fn audit_log(host: tauri::State<'_, HostHandle>) -> Result<String, String> {
+    let lines = audit::read_audit_newest_first(&host.audit_path())?;
+    serde_json::to_string(&lines).map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+pub async fn approvals(host: tauri::State<'_, HostHandle>) -> Result<String, String> {
+    let host = host.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || host.call_when_ready("approvals"))
+        .await
+        .map_err(|err| err.to_string())?
+}
+
+#[tauri::command]
+pub async fn approval_act(
+    host: tauri::State<'_, HostHandle>,
+    action: String,
+    id: String,
+    draft: String,
+    instruction: String,
+    scope: String,
+    until: u64,
+) -> Result<String, String> {
+    let host = host.inner().clone();
+    let params = serde_json::json!({
+        "action": action,
+        "id": id,
+        "draft": draft,
+        "instruction": instruction,
+        "scope": scope,
+        "until": until,
+    });
+    tauri::async_runtime::spawn_blocking(move || host.call_params("approval_act", params))
         .await
         .map_err(|err| err.to_string())?
 }
@@ -182,7 +235,8 @@ impl HostInner {
 
         let pending = Arc::new(Mutex::new(HashMap::new()));
         let reader_pending = Arc::clone(&pending);
-        let reader = thread::spawn(move || read_stdout(stdout, reader_pending));
+        let audit_path = self.audit.clone();
+        let reader = thread::spawn(move || read_stdout(stdout, reader_pending, audit_path));
         let stderr_host = Arc::clone(self);
         let stderr_thread = thread::spawn(move || read_stderr(stderr, &stderr_host));
 
@@ -222,7 +276,19 @@ impl HostInner {
         false
     }
 
+    fn call_params(&self, method: &str, params: serde_json::Value) -> Result<String, String> {
+        self.call_frame(method, Some(params))
+    }
+
     fn call(&self, method: &str) -> Result<String, String> {
+        self.call_frame(method, None)
+    }
+
+    fn call_frame(
+        &self,
+        method: &str,
+        params: Option<serde_json::Value>,
+    ) -> Result<String, String> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (sender, receiver): (
             SyncSender<Result<String, String>>,
@@ -235,7 +301,7 @@ impl HostInner {
             };
             let pending = Arc::clone(&active.pending);
             pending.lock().unwrap().insert(id, sender);
-            let frame = encode_request(id, method)?;
+            let frame = encode_request_params(id, method, params.as_ref())?;
             let write = {
                 let mut stdin = active.stdin.lock().unwrap();
                 stdin.write_all(&frame).and_then(|_| stdin.flush())
@@ -279,7 +345,7 @@ impl HostInner {
     }
 }
 
-fn read_stdout(mut stdout: ChildStdout, pending: Arc<Pending>) {
+fn read_stdout(mut stdout: ChildStdout, pending: Arc<Pending>, audit: PathBuf) {
     let mut buffer = Vec::new();
     let mut chunk = [0u8; 4096];
     loop {
@@ -293,13 +359,21 @@ fn read_stdout(mut stdout: ChildStdout, pending: Arc<Pending>) {
                 loop {
                     match next_frame(&mut buffer) {
                         Ok(None) => break,
-                        Ok(Some(body)) => deliver(&pending, &body),
+                        Ok(Some(body)) => handle_host_frame(&body, &pending, &audit),
                         Err(_) => return,
                     }
                 }
             }
         }
     }
+}
+
+fn handle_host_frame(body: &[u8], pending: &Pending, audit: &std::path::Path) {
+    if let Some(line) = audit_line(body) {
+        let _ = audit::append_audit(audit, &line);
+        return;
+    }
+    deliver(pending, body);
 }
 
 fn deliver(pending: &Pending, body: &[u8]) {

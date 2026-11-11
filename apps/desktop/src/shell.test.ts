@@ -79,6 +79,17 @@ test("the main page frames plugin widgets and switches theme", async () => {
   expect(config.app.security.csp).toContain("style-src 'self' 'unsafe-inline'");
   expect(capabilities.permissions).toContain("allow-widgets");
   expect(build).toContain("widgets");
+  expect(html).toContain('id="ollama-status"');
+  expect(html).toContain('href="activity.html"');
+  expect(html).toContain('href="approvals.html"');
+  expect(script).toContain('invoke("ollama_status")');
+  expect(script).toContain("https://ollama.com/download");
+  expect(capabilities.permissions).toContain("allow-ollama-status");
+  expect(capabilities.permissions).toContain("allow-audit-log");
+  expect(capabilities.permissions).toContain("allow-approvals");
+  expect(capabilities.permissions).toContain("allow-approval-act");
+  expect(build).toContain("audit_log");
+  expect(build).toContain("approval_act");
 });
 
 test("packaging is per-user and unsigned", async () => {

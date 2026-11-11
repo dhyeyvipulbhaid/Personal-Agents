@@ -18,8 +18,18 @@ html[data-theme="dark"] body {
   color: #f4f1ea;
 }
 
+nav {
+  display: flex;
+  gap: 16px;
+  padding: 16px 48px 0;
+}
+
+nav a {
+  color: inherit;
+}
+
 main {
-  padding: 48px;
+  padding: 32px 48px 48px;
 }
 
 h1 {

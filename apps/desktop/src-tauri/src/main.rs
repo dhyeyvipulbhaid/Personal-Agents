@@ -4,6 +4,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod audit;
 mod host;
 mod rpc;
 
@@ -20,7 +21,11 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             host::host_version,
             host::note_displayed_host_version,
-            host::widgets
+            host::widgets,
+            host::ollama_status,
+            host::audit_log,
+            host::approvals,
+            host::approval_act
         ])
         .build(tauri::generate_context!())
         .expect("failed to open the Personal Agents window")

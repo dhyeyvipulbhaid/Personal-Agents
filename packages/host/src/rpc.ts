@@ -78,7 +78,21 @@ export class FrameBuffer {
   }
 }
 
-export type RpcMethods = Record<string, () => string>;
+export type RpcMethod = (params: unknown) => string;
+
+export type RpcMethods = Record<string, RpcMethod>;
+
+/** A notification frame. The shell records these; they are not replies. */
+export function encodeNotification(
+  method: string,
+  params: unknown,
+): Uint8Array {
+  return encodeFrame(
+    new TextEncoder().encode(
+      JSON.stringify({ jsonrpc: "2.0", method, params }),
+    ),
+  );
+}
 
 /** Handles one request body. A notification (no id) produces no response. */
 export function dispatch(
@@ -108,7 +122,7 @@ export function dispatch(
   const extra = methods[message.method];
   if (extra) {
     try {
-      return { jsonrpc: "2.0", id, result: extra() };
+      return { jsonrpc: "2.0", id, result: extra(message.params) };
     } catch (error) {
       const text = error instanceof Error ? error.message : "call failed";
       return {
