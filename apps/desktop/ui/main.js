@@ -512,14 +512,16 @@ showWidgets().catch((error) => {
 });
 showRevenue();
 showMail();
-function browserVisible() {
-  return browserOnScreen && document.visibilityState !== "hidden";
+function pageVisible() {
+  return document.visibilityState !== "hidden";
 }
 
 async function showBrowser() {
   try {
     const parsed = JSON.parse(
-      await window.pa.invoke("browser_activity", { visible: browserVisible() }),
+      await window.pa.invoke("browser_activity", {
+        visible: pageVisible() && browserOnScreen,
+      }),
     );
     if (parsed && browserLocked && !parsed.pendingApproval) {
       browserLocked = "";
@@ -533,7 +535,7 @@ async function showBrowser() {
 
 function armBrowserWatch() {
   window.clearInterval(browserTimer);
-  if (!browserVisible()) {
+  if (!pageVisible()) {
     window.pa.invoke("browser_activity", { visible: false }).catch(() => {});
     return;
   }
