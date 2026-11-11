@@ -75,6 +75,15 @@ jobs:
         working-directory: apps/desktop
         run: bun run build
 
+      - name: Ad-hoc sign the macOS app
+        if: runner.os == 'macOS'
+        run: |
+          app="apps/desktop/src-tauri/target/release/bundle/macos/Personal Agents.app"
+          codesign --force --sign - "$app/Contents/MacOS/agent-host"
+          codesign --force --deep --sign - "$app"
+          codesign --verify --deep --strict "$app"
+          codesign --verify --strict "$app/Contents/MacOS/agent-host"
+
       - name: Zip the macOS app
         if: runner.os == 'macOS'
         run: ditto -c -k --keepParent "apps/desktop/src-tauri/target/release/bundle/macos/Personal Agents.app" personal-agents-macos.zip

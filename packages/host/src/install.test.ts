@@ -81,6 +81,12 @@ test("the user installer checks the sha256 and only the user path", () => {
   expect(bad.stderr.toString()).toContain("sha256 mismatch");
 }, 30_000);
 
+test("the macOS installer clears quarantine without sudo", () => {
+  const script = readFileSync(join(root, "install.sh"), "utf8");
+  expect(script).toContain("xattr -dr com.apple.quarantine");
+  expect(script).not.toContain("sudo");
+});
+
 test("the windows installer changes the user path and not the machine path", () => {
   const script = readFileSync(join(root, "install.ps1"), "utf8");
   expect(script).toContain('"User"');
