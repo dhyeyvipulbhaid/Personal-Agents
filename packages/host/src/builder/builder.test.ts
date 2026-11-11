@@ -26,10 +26,13 @@ test("a one-line request installs a no-code number widget", async () => {
 
   const { builder, kernel, approvals } = harness();
   const approvalId = builder.requestInstall(spec, rows, "total-widget");
-  expect(approvals.pending()[0]?.summary).toContain("llama");
+  expect(approvals.pending()[0]?.summary).toBe(
+    "install 'Total revenue' widget",
+  );
   await builder.approveInstall(approvalId);
 
   expect(kernel.tiles()[0]?.html).toContain("180");
+  expect(kernel.tiles()[0]?.title).toBe("Total revenue");
   builder.remove("total-widget");
   expect(kernel.registrations()).toEqual([]);
 });
