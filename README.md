@@ -52,7 +52,7 @@ On Windows the build writes an NSIS installer at `apps/desktop/src-tauri/target/
 
 On macOS the build writes `Personal Agents.app` at `apps/desktop/src-tauri/target/release/bundle/macos/`. Zip that app to move it, unzip it into `~/Applications`, and open it. The app is not signed. macOS may ask you to confirm an unknown developer. That confirmation is not an administrator password. Remove the app by moving it from `~/Applications` to the Trash.
 
-Hand checklists live in `docs/manual-tests/`. They cover install, the host, plugins, the user installer, the locked-down gate, activity, approvals, models, chat, files, and the revenue tile.
+Hand checklists live in `docs/manual-tests/`. They cover install, the host, plugins, the user installer, the locked-down gate, activity, approvals, models, chat, files, the revenue tile, and local mail.
 
 ## Roadmap at a glance
 
