@@ -1,6 +1,7 @@
 import type { Approvals } from "../approvals/approvals.ts";
 import type {
   ChatResult,
+  ChatTurn,
   ModelAdapter,
   ModelSettings,
   ToolCall,
@@ -50,7 +51,7 @@ export class ChatSession {
     let sawToken = false;
     const controller = new AbortController();
     this.abort = controller;
-    const messages = [
+    const messages: ChatTurn[] = [
       ...(context ? [{ role: "system" as const, content: context }] : []),
       ...history,
     ];
@@ -76,22 +77,50 @@ export class ChatSession {
         call !== undefined &&
         tools?.definitions.some((item) => item.function.name === call.name) ===
           true;
+      let handled = false;
+      let toolOutput = "";
       if (call && tools && known) {
-        const output = await tools.runTool(call);
+        handled = true;
+        toolOutput = await tools.runTool(call);
         messages.push({
-          role: "user",
-          content: `Tool result for ${call.name}:\n${output}`,
+          role: "assistant",
+          content: result.text,
+          toolCalls: [
+            {
+              function: {
+                name: call.name,
+                arguments: parsedArguments(call.arguments),
+              },
+            },
+          ],
         });
-        result = await this.adapter.chat(
-          { model, messages, tools: tools.definitions },
-          onDelta,
-          controller.signal,
+        messages.push({
+          role: "tool",
+          content: toolOutput,
+          toolName: call.name,
+        });
+        assistant.text = "";
+        try {
+          result = await this.adapter.chat(
+            { model, messages },
+            onDelta,
+            controller.signal,
+          );
+        } catch (error) {
+          const detail = error instanceof Error ? error.message : "unknown";
+          console.error(`chat-tool ${call.name} follow-up failed: ${detail}`);
+          throw error;
+        }
+        console.error(
+          `chat-tool ${call.name} follow-up chars=${result.text.length} tool=${result.toolCall?.name ?? "none"}`,
         );
       }
-      if (result.text) {
+      if (result.text.trim().length > 0) {
         assistant.text = result.text;
+      } else if (handled) {
+        assistant.text = replyFromTool(toolOutput);
       }
-      if (result.toolCall) {
+      if (result.toolCall && !handled) {
         this.raiseApproval(result.toolCall.name, result.toolCall.arguments);
       }
       return result;
@@ -149,4 +178,31 @@ export class ChatSession {
       entry.text = `${entry.text} (approved)`;
     }
   }
+}
+
+function parsedArguments(raw: string): unknown {
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch {
+    return {};
+  }
+}
+
+function replyFromTool(output: string): string {
+  try {
+    const parsed = JSON.parse(output) as { opened?: boolean; title?: string };
+    if (parsed.opened === false) {
+      return "That visit was not allowed.";
+    }
+    if (typeof parsed.title === "string" && parsed.title.length > 0) {
+      return `The page title is ${parsed.title}.`;
+    }
+  } catch {
+    // The tool result is plain text.
+  }
+  const trimmed = output.trim();
+  if (trimmed.length === 0) {
+    return "The model did not answer.";
+  }
+  return trimmed;
 }

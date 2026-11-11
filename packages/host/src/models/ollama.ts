@@ -1,6 +1,7 @@
 import type {
   ChatRequest,
   ChatResult,
+  ChatTurn,
   ModelAdapter,
   ModelCapabilities,
 } from "./adapter.ts";
@@ -45,7 +46,7 @@ export class OllamaConnector implements ModelAdapter {
       method: "POST",
       body: JSON.stringify({
         model: request.model,
-        messages: request.messages,
+        messages: request.messages.map(ollamaMessage),
         stream: true,
         tools: request.tools,
       }),
@@ -95,6 +96,26 @@ export class OllamaConnector implements ModelAdapter {
       return undefined;
     }
   }
+}
+
+function ollamaMessage(message: ChatTurn): Record<string, unknown> {
+  const payload: Record<string, unknown> = {
+    role: message.role,
+    content: message.content,
+  };
+  if (message.toolCalls && message.toolCalls.length > 0) {
+    payload.tool_calls = message.toolCalls.map((call) => ({
+      type: "function",
+      function: {
+        name: call.function.name,
+        arguments: call.function.arguments,
+      },
+    }));
+  }
+  if (message.toolName) {
+    payload.name = message.toolName;
+  }
+  return payload;
 }
 
 function capabilitiesOf(

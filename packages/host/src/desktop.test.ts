@@ -130,7 +130,8 @@ test("a chat request sends tools to ollama and runs the tool call", async () => 
   const connector = new OllamaConnector(async (_url, init) => {
     const body = JSON.parse(String(init?.body)) as (typeof bodies)[number];
     bodies.push(body);
-    if (bodies.length === 1) {
+    // qwen3:4b calls the tool again when the follow-up still offers tools.
+    if (body.tools && body.tools.length > 0) {
       return new Response(
         JSON.stringify({
           message: {
@@ -148,12 +149,11 @@ test("a chat request sends tools to ollama and runs the tool call", async () => 
         }),
       );
     }
-    return new Response(
-      JSON.stringify({
-        message: { content: "The page title is Example Domain." },
-        done: true,
-      }),
-    );
+    const transcript = JSON.stringify(body.messages ?? []);
+    const content = transcript.includes('"opened":false')
+      ? "That visit was not allowed."
+      : "The page title is Example Domain.";
+    return new Response(JSON.stringify({ message: { content }, done: true }));
   });
   const dir = mkdtempSync(join(tmpdir(), "pa-chat-tools-"));
   const app = new DesktopApp({
@@ -166,24 +166,50 @@ test("a chat request sends tools to ollama and runs the tool call", async () => 
   try {
     const send = Promise.resolve(
       methods.chat_send({
-        text: "open example.com in Chrome and tell me the page title.",
+        text: "open example.com and tell me the page title.",
       }),
     );
     const first = await Promise.race([
       send.then((raw) => ({ kind: "sent" as const, raw })),
       waitForApproval(methods),
     ]);
-    if (first.kind === "approval") {
-      await methods.approval_act({
-        action: "approve",
-        id: first.id,
-        draft: "",
-        instruction: "",
-        scope: "once",
-        until: 0,
-      });
-      await send;
+    if (first.kind !== "approval") {
+      throw new Error("the visit ended before its approval");
     }
+    const pendingDuring = JSON.parse(await methods.approvals({})) as {
+      summary: string;
+    }[];
+    expect(pendingDuring).toHaveLength(1);
+    expect(pendingDuring[0]?.summary).toBe("visit example.com");
+    await methods.approval_act({
+      action: "approve",
+      id: first.id,
+      draft: "",
+      instruction: "",
+      scope: "once",
+      until: 0,
+    });
+    const state = JSON.parse(await send) as {
+      messages: { role: string; text: string }[];
+      streaming: boolean;
+    };
+    const cards = state.messages.filter(
+      (message) => message.role === "approval",
+    );
+    expect(cards).toHaveLength(1);
+    expect(cards[0]?.text).toContain("visit example.com");
+    expect(cards[0]?.text).toContain("(approved)");
+    expect(
+      state.messages.some((message) => message.text === "browser.open"),
+    ).toBe(false);
+    expect(JSON.parse(await methods.approvals({}))).toEqual([]);
+    expect(state.streaming).toBe(false);
+    const reply = state.messages
+      .filter((message) => message.role === "assistant")
+      .map((message) => message.text)
+      .join("\n");
+    expect(reply).toContain("The page title is Example Domain.");
+    expect(bodies.at(-1)?.tools).toBeUndefined();
     const offered = bodies[0]?.tools?.map((tool) => tool.function.name) ?? [];
     expect(bodies[0]?.model).toBe("qwen3:4b");
     expect(offered).toContain("browser.open");
@@ -194,12 +220,109 @@ test("a chat request sends tools to ollama and runs the tool call", async () => 
       ),
     ).toBe(true);
     expect(
-      bodies[1]?.messages?.some((message) =>
-        message.content.includes("Example Domain"),
+      bodies.some((body) =>
+        body.messages?.some(
+          (message) =>
+            message.role === "tool" &&
+            message.content.includes("Example Domain"),
+        ),
       ),
     ).toBe(true);
   } finally {
     globalThis.fetch = originalFetch;
+    app.close();
+  }
+});
+
+test("a denied visit is one approval and the model says it was not allowed", async () => {
+  const { app, methods } = await browserHarness(async (body) => {
+    if (body.tools && body.tools.length > 0) {
+      return toolCallResponse();
+    }
+    return textResponse("That visit was not allowed.");
+  });
+  try {
+    const send = Promise.resolve(
+      methods.chat_send({
+        text: "open example.com and tell me the page title.",
+      }),
+    );
+    const first = await Promise.race([
+      send.then(() => ({ kind: "sent" as const })),
+      waitForApproval(methods),
+    ]);
+    if (first.kind !== "approval") {
+      throw new Error("the visit ended before its approval");
+    }
+    await methods.approval_act({
+      action: "deny",
+      id: first.id,
+      draft: "",
+      instruction: "",
+      scope: "once",
+      until: 0,
+    });
+    const state = JSON.parse(await send) as {
+      messages: { role: string; text: string }[];
+    };
+    expect(
+      state.messages.filter((message) => message.role === "approval"),
+    ).toHaveLength(1);
+    expect(
+      state.messages.some((message) => message.text === "browser.open"),
+    ).toBe(false);
+    expect(
+      state.messages
+        .filter((message) => message.role === "assistant")
+        .map((message) => message.text)
+        .join("\n"),
+    ).toContain("not allowed");
+  } finally {
+    app.close();
+  }
+});
+
+test("a follow-up model error is shown in the chat", async () => {
+  const { app, methods } = await browserHarness(async (body) => {
+    if (body.tools && body.tools.length > 0) {
+      return toolCallResponse();
+    }
+    throw new Error("model exploded");
+  });
+  try {
+    const send = Promise.resolve(
+      methods.chat_send({
+        text: "open example.com and tell me the page title.",
+      }),
+    );
+    const first = await Promise.race([
+      send.then(() => ({ kind: "sent" as const })),
+      waitForApproval(methods),
+    ]);
+    if (first.kind !== "approval") {
+      throw new Error("the visit ended before its approval");
+    }
+    await methods.approval_act({
+      action: "approve",
+      id: first.id,
+      draft: "",
+      instruction: "",
+      scope: "once",
+      until: 0,
+    });
+    const state = JSON.parse(await send) as {
+      messages: { role: string; text: string }[];
+    };
+    expect(
+      state.messages.some((message) => message.text === "browser.open"),
+    ).toBe(false);
+    expect(
+      state.messages
+        .filter((message) => message.role === "assistant")
+        .map((message) => message.text)
+        .join("\n"),
+    ).toContain("model exploded");
+  } finally {
     app.close();
   }
 });
@@ -382,6 +505,64 @@ test("the builder plans a revenue number widget and waits for approval", async (
 });
 
 const running = async () => "running" as const;
+
+type OllamaBody = {
+  tools?: { function: { name: string } }[];
+  messages?: { role: string; content: string }[];
+};
+
+function toolCallResponse(): Response {
+  return new Response(
+    JSON.stringify({
+      message: {
+        content: "",
+        tool_calls: [
+          {
+            function: {
+              name: "browser.open",
+              arguments: { url: "https://example.com" },
+            },
+          },
+        ],
+      },
+      done: true,
+    }),
+  );
+}
+
+function textResponse(content: string): Response {
+  return new Response(JSON.stringify({ message: { content }, done: true }));
+}
+
+async function browserHarness(
+  reply: (body: OllamaBody) => Response | Promise<Response>,
+): Promise<{
+  app: DesktopApp;
+  methods: ReturnType<DesktopApp["methods"]>;
+}> {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    if (String(input).includes("example.com")) {
+      return new Response("<html><title>Example Domain</title></html>");
+    }
+    return originalFetch(input);
+  }) as typeof fetch;
+  const connector = new OllamaConnector(async (_url, init) =>
+    reply(JSON.parse(String(init?.body)) as OllamaBody),
+  );
+  const app = new DesktopApp({
+    dataDir: mkdtempSync(join(tmpdir(), "pa-browser-chat-")),
+    adapter: connector,
+    probe: running,
+  });
+  await app.start();
+  const close = app.close.bind(app);
+  app.close = () => {
+    globalThis.fetch = originalFetch;
+    close();
+  };
+  return { app, methods: app.methods() };
+}
 
 async function waitForApproval(
   methods: ReturnType<DesktopApp["methods"]>,

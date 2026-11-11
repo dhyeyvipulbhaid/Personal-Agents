@@ -6,8 +6,12 @@ export type ModelCapabilities = {
 };
 
 export type ChatTurn = {
-  role: "user" | "assistant" | "system";
+  role: "user" | "assistant" | "system" | "tool";
   content: string;
+  toolCalls?: {
+    function: { name: string; arguments: unknown };
+  }[];
+  toolName?: string;
 };
 
 export type ToolDefinition = {

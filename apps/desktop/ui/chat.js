@@ -116,8 +116,14 @@ function renderMessages(messages) {
       thread.append(note);
       continue;
     }
-    const bubble = document.createElement("div");
     const role = message.role === "user" ? "user" : "assistant";
+    if (
+      role === "assistant" &&
+      String(message.text ?? "").trim().length === 0
+    ) {
+      continue;
+    }
+    const bubble = document.createElement("div");
     bubble.className = `bubble ${role}`;
     if (role === "assistant") {
       bubble.innerHTML = markdownToHtml(message.text ?? "");
@@ -170,6 +176,10 @@ async function refresh() {
   activeId = state.activeId || activeId;
   renderSessions(state);
   renderMessages(state.messages);
+  if (state.streaming) {
+    sending = true;
+    setSending(true);
+  }
   if (state.notice) {
     modelNotice.textContent = state.notice;
   }
