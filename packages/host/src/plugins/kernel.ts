@@ -128,6 +128,14 @@ export class PluginKernel {
     }
   }
 
+  loaded(): { id: string; name: string; health: PluginHealth }[] {
+    return [...this.plugins.values()].map((plugin) => ({
+      id: plugin.manifest.id,
+      name: plugin.manifest.name,
+      health: plugin.health,
+    }));
+  }
+
   health(id: string): PluginHealth {
     const plugin = this.plugins.get(id);
     if (!plugin) {

@@ -4,6 +4,8 @@ Personal Agents is a workspace for an employee on a work laptop. It installs wit
 
 **Status.** Version 1 demo is described in `docs/demo/v1-script.md`. It covers install, chat, the revenue tile, mail, the builder, memory, an approval, and a browser task.
 
+The window is one shell for every page: Home, Chat, Approvals, Activity, Capabilities, Builder, Memory, and Mail. Chat, the agent, and the builder use `qwen3:4b`, `qwen3:8b`, and `qwen2.5-coder:7b`. Pull a missing model with `ollama pull <model>`. The sample revenue file and the demo mailbox are copied into the app data folder the first time the host starts. A page says what failed and what to do when a dependency is missing.
+
 ## Repo layout
 
 - `apps/desktop` is the desktop shell, a Tauri 2 window. The page is bundled with the app.
@@ -23,6 +25,8 @@ bun run test
 ```
 
 `lint` checks formatting and the linter. `typecheck` runs the TypeScript compiler without emitting files. `test` runs the unit tests. All three should pass before a change is pushed. The same three commands run in CI on `windows-latest` and `macos-latest`. The packaging job installs the app, checks that the agent host is running, checks that it is back within 3 seconds after it is stopped, and checks that the app and the host are not listening on a TCP or UDP port.
+
+`bun run test:e2e` opens the desktop pages in a browser. One of those checks starts the real agent host and fails if a page says it is unavailable while its data is present. The same run writes light and dark screenshots of each page to `artifacts/ui-screenshots/`. CI uploads that folder.
 
 ## Build and install
 

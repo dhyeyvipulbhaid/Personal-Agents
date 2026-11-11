@@ -83,37 +83,41 @@ test("a finished header without a content length is rejected", () => {
   );
 });
 
-test("ping and version answer over a framed response", () => {
-  expect(responseFor({ jsonrpc: "2.0", id: 7, method: "ping" })).toEqual({
+test("ping and version answer over a framed response", async () => {
+  expect(await responseFor({ jsonrpc: "2.0", id: 7, method: "ping" })).toEqual({
     jsonrpc: "2.0",
     id: 7,
     result: "pong",
   });
-  expect(responseFor({ jsonrpc: "2.0", id: 8, method: "version" })).toEqual({
+  expect(
+    await responseFor({ jsonrpc: "2.0", id: 8, method: "version" }),
+  ).toEqual({
     jsonrpc: "2.0",
     id: 8,
     result: HOST_VERSION,
   });
 });
 
-test("an unknown method returns method not found", () => {
-  expect(responseFor({ jsonrpc: "2.0", id: 3, method: "other" })).toEqual({
-    jsonrpc: "2.0",
-    id: 3,
-    error: { code: -32601, message: "Method not found" },
-  });
+test("an unknown method returns method not found", async () => {
+  expect(await responseFor({ jsonrpc: "2.0", id: 3, method: "other" })).toEqual(
+    {
+      jsonrpc: "2.0",
+      id: 3,
+      error: { code: -32601, message: "Method not found" },
+    },
+  );
 });
 
-test("a request that is not JSON-RPC is invalid", () => {
-  expect(responseFor({ id: 4 })).toEqual({
+test("a request that is not JSON-RPC is invalid", async () => {
+  expect(await responseFor({ id: 4 })).toEqual({
     jsonrpc: "2.0",
     id: 4,
     error: { code: -32600, message: "Invalid Request" },
   });
 });
 
-test("a body that is not JSON is a parse error", () => {
-  const frame = handleBody(new TextEncoder().encode("nope"));
+test("a body that is not JSON is a parse error", async () => {
+  const frame = await handleBody(new TextEncoder().encode("nope"));
   if (frame === null) {
     throw new Error("expected a parse error frame");
   }
@@ -129,10 +133,12 @@ test("a body that is not JSON is a parse error", () => {
   });
 });
 
-test("a notification gets no response", () => {
-  expect(dispatch({ jsonrpc: "2.0", method: "ping" })).toBeNull();
+test("a notification gets no response", async () => {
+  expect(await dispatch({ jsonrpc: "2.0", method: "ping" })).toBeNull();
   expect(
-    handleBody(new TextEncoder().encode('{"jsonrpc":"2.0","method":"ping"}')),
+    await handleBody(
+      new TextEncoder().encode('{"jsonrpc":"2.0","method":"ping"}'),
+    ),
   ).toBeNull();
 });
 
@@ -211,8 +217,10 @@ test("the stdio server answers ping and version", async () => {
   }
 }, 10_000);
 
-function responseFor(message: unknown): unknown {
-  const frame = handleBody(new TextEncoder().encode(JSON.stringify(message)));
+async function responseFor(message: unknown): Promise<unknown> {
+  const frame = await handleBody(
+    new TextEncoder().encode(JSON.stringify(message)),
+  );
   if (frame === null) {
     return null;
   }

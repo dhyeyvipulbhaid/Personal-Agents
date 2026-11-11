@@ -63,6 +63,29 @@ try {
         settings.set("builder", String(args?.builder ?? ""), catalog);
         return "ok";
       }
+      if (command === "list_models") {
+        return JSON.stringify({
+          running: true,
+          models: catalog,
+          selected: {
+            chat: settings.get("chat"),
+            agent: settings.get("agent"),
+            builder: settings.get("builder"),
+          },
+          missing: [],
+          notice: "",
+        });
+      }
+      if (command === "ollama_status") {
+        return "running";
+      }
+      if (
+        command === "chat_stop" ||
+        command === "chat_new" ||
+        command === "chat_open"
+      ) {
+        return JSON.stringify(session.messages);
+      }
       if (command === "approvals") {
         return JSON.stringify(approvals.pending());
       }
@@ -93,16 +116,18 @@ try {
   await page.waitForURL(/chat\.html$/);
   await page.locator("#draft").fill("hello");
   await page.getByRole("button", { name: "Send" }).click();
-  await page.getByText("assistant: from llama").waitFor();
+  await page.locator(".bubble.assistant", { hasText: "from llama" }).waitFor();
 
-  await page.locator("#chat-model").fill("llama-next");
+  await page.locator("#chat-model").selectOption("llama-next");
   await page.getByRole("button", { name: "Save models" }).click();
   await page.getByText("Saved").waitFor();
   await page.locator("#draft").fill("again");
   await page.getByRole("button", { name: "Send" }).click();
-  await page.getByText("assistant: from llama-next").waitFor();
+  await page
+    .locator(".bubble.assistant", { hasText: "from llama-next" })
+    .waitFor();
 
-  await page.locator("#agent-model").fill("plain");
+  await page.locator("#agent-model").selectOption("plain");
   await page.getByRole("button", { name: "Save models" }).click();
   await page.waitForFunction(() =>
     document

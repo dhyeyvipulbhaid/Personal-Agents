@@ -37,6 +37,7 @@ export interface ModelAdapter {
   chat(
     request: ChatRequest,
     onDelta: (delta: ChatDelta) => void,
+    signal?: AbortSignal,
   ): Promise<ChatResult>;
   structured<T>(request: ChatRequest): Promise<T>;
 }
@@ -46,9 +47,9 @@ export type RoleName = "chat" | "agent" | "builder";
 /** Per-role model choice. The agent role requires tool support. */
 export class ModelSettings {
   private readonly chosen: Record<RoleName, string> = {
-    chat: "",
-    agent: "",
-    builder: "",
+    chat: "qwen3:4b",
+    agent: "qwen3:8b",
+    builder: "qwen2.5-coder:7b",
   };
 
   set(role: RoleName, name: string, catalog: ModelCapabilities[]): void {

@@ -78,7 +78,7 @@ export class FrameBuffer {
   }
 }
 
-export type RpcMethod = (params: unknown) => string;
+export type RpcMethod = (params: unknown) => string | Promise<string>;
 
 export type RpcMethods = Record<string, RpcMethod>;
 
@@ -95,10 +95,10 @@ export function encodeNotification(
 }
 
 /** Handles one request body. A notification (no id) produces no response. */
-export function dispatch(
+export async function dispatch(
   message: unknown,
   methods: RpcMethods = {},
-): RpcResponse | null {
+): Promise<RpcResponse | null> {
   if (!isRecord(message)) {
     return invalid(null);
   }
@@ -122,7 +122,7 @@ export function dispatch(
   const extra = methods[message.method];
   if (extra) {
     try {
-      return { jsonrpc: "2.0", id, result: extra(message.params) };
+      return { jsonrpc: "2.0", id, result: await extra(message.params) };
     } catch (error) {
       const text = error instanceof Error ? error.message : "call failed";
       return {
@@ -140,13 +140,16 @@ export function dispatch(
 }
 
 /** Turns one request body into a response frame, or null when no reply is due. */
-export function handleBody(
+export async function handleBody(
   body: Uint8Array,
   methods: RpcMethods = {},
-): Uint8Array | null {
+): Promise<Uint8Array | null> {
   let response: RpcResponse | null;
   try {
-    response = dispatch(JSON.parse(new TextDecoder().decode(body)), methods);
+    response = await dispatch(
+      JSON.parse(new TextDecoder().decode(body)),
+      methods,
+    );
   } catch {
     response = {
       jsonrpc: "2.0",
@@ -164,23 +167,36 @@ export function handleBody(
 export async function serveStdio(methods: RpcMethods = {}): Promise<void> {
   const frames = new FrameBuffer();
   const reader = Bun.stdin.stream().getReader();
+  const pending: Promise<void>[] = [];
   try {
     for (;;) {
       const { done, value } = await reader.read();
       if (done) {
+        await Promise.all(pending);
         return;
       }
       for (const body of frames.push(value)) {
-        const response = handleBody(body, methods);
-        if (response !== null) {
-          writeSync(1, response);
-        }
+        pending.push(answer(body, methods));
       }
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : "frame error";
     console.error(message);
   }
+}
+
+/** One request at a time would block chat polling, so replies run together. */
+function answer(body: Uint8Array, methods: RpcMethods): Promise<void> {
+  return handleBody(body, methods)
+    .then((response) => {
+      if (response !== null) {
+        writeSync(1, response);
+      }
+    })
+    .catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : "call failed";
+      console.error(message);
+    });
 }
 
 function invalid(id: RpcId): RpcResponse {
