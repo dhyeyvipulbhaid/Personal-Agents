@@ -91,6 +91,11 @@ export class ChatSession {
           }
           return { text: assistant.text };
         }
+        const refused = deniedVisitReply(toolOutput);
+        if (refused) {
+          assistant.text = refused;
+          return { text: refused };
+        }
         messages.push({
           role: "assistant",
           content: result.text,
@@ -206,12 +211,33 @@ function parsedArguments(raw: string): unknown {
   }
 }
 
-function replyFromTool(output: string): string {
+function deniedVisitReply(output: string): string | null {
   try {
-    const parsed = JSON.parse(output) as { opened?: boolean; title?: string };
-    if (parsed.opened === false) {
-      return "That visit was not allowed.";
+    const parsed = JSON.parse(output) as {
+      opened?: boolean;
+      cancelled?: boolean;
+      url?: string;
+    };
+    if (parsed.cancelled === true || parsed.opened !== false) {
+      return null;
     }
+    const host =
+      typeof parsed.url === "string" && parsed.url.length > 0
+        ? new URL(parsed.url).host
+        : "that page";
+    return `Not allowed: I didn't open ${host}.`;
+  } catch {
+    return null;
+  }
+}
+
+function replyFromTool(output: string): string {
+  const refused = deniedVisitReply(output);
+  if (refused) {
+    return refused;
+  }
+  try {
+    const parsed = JSON.parse(output) as { title?: string };
     if (typeof parsed.title === "string" && parsed.title.length > 0) {
       return `The page title is ${parsed.title}.`;
     }
