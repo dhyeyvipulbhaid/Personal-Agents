@@ -11,10 +11,26 @@ import {
   markHandled,
   openMailState,
   recentThreads,
+  replyRecipients,
   sendStillNeedsApproval,
   writeReply,
 } from "./mail.ts";
 import { FOLLOW_UPS, MAIL_USER, sampleMessages, toEml } from "./sample.ts";
+
+test("a reply to yourself goes to the other people on the message", () => {
+  expect(replyRecipients({ from: "a@example.com", to: MAIL_USER })).toBe(
+    "a@example.com",
+  );
+  expect(replyRecipients({ from: MAIL_USER, to: "a@example.com" })).toBe(
+    "a@example.com",
+  );
+  expect(
+    replyRecipients({
+      from: MAIL_USER,
+      to: "a@example.com, b@example.com",
+    }),
+  ).toBe("a@example.com, b@example.com");
+});
 
 test("the sample mailbox lists sender, subject, date, and thread", () => {
   const folder = writeMailbox();

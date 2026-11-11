@@ -17,6 +17,15 @@ function snoozeUntil(choice) {
   return Date.now() + hour;
 }
 
+function pillLabels(item) {
+  const effects = Array.isArray(item.effects) ? item.effects : [];
+  const capability = item.capability || "";
+  if (capability === "mail.send" || effects.includes("sends")) {
+    return ["Writes to local outbox"];
+  }
+  return [...effects, capability].filter((label) => label.length > 0);
+}
+
 function riskClass(label) {
   if (/delete/i.test(label)) {
     return "danger";
@@ -78,11 +87,7 @@ function render(next) {
     source.className = "muted";
     source.textContent = `Source ${item.taskId || "app"}`;
     const pills = document.createElement("p");
-    const labels = [
-      ...(Array.isArray(item.effects) ? item.effects : []),
-      item.capability || "",
-    ].filter((label) => label.length > 0);
-    for (const label of labels) {
+    for (const label of pillLabels(item)) {
       const pill = document.createElement("span");
       pill.className = `pill ${riskClass(label)}`;
       pill.textContent = label;
@@ -90,6 +95,7 @@ function render(next) {
     }
     const evidence = document.createElement("textarea");
     evidence.className = "evidence";
+    evidence.rows = 8;
     evidence.value = item.draft ?? "";
     evidence.setAttribute("aria-label", "Evidence");
     const once = document.createElement("option");

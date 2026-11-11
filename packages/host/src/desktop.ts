@@ -18,6 +18,7 @@ import {
   loadMailbox,
   openMailState,
   recentThreads,
+  replyRecipients,
   writeReply,
 } from "./mail/mail.ts";
 import { MAIL_USER } from "./mail/sample.ts";
@@ -146,6 +147,7 @@ export class DesktopApp {
   private plan: { spec: WidgetSpec; preview: string } | null = null;
   private notice = "";
   private readonly mailTasks = new Map<string, Promise<void>>();
+  private readonly openReplies = new Map<string, string>();
 
   constructor(options: DesktopOptions) {
     this.adapter =
@@ -463,31 +465,53 @@ export class DesktopApp {
         "That message is not in the local mailbox. Refresh Mail and try the draft again.",
       );
     }
-    let draft = `Thanks for the note about ${message.thread}.`;
+    const waiting = this.openReplies.get(id);
+    if (
+      waiting &&
+      this.approvals.pending().some((item) => item.id === waiting)
+    ) {
+      throw new Error(
+        "A reply to this message is already waiting in Approvals.",
+      );
+    }
+    if ((await this.probe()) !== "running") {
+      throw new Error(ollamaDownMessage(this.settings.get("agent")));
+    }
+    let draft = "";
     try {
-      if ((await this.probe()) === "running") {
-        const result = await this.adapter.chat(
-          {
-            model: this.settings.get("chat"),
-            messages: [
-              {
-                role: "user",
-                content: `Write a short reply from ${MAIL_USER}.\nFrom: ${message.from}\nSubject: ${message.subject}\n\n${message.body}`,
-              },
-            ],
-          },
-          () => {},
-        );
-        if (result.text.trim().length > 0) {
-          draft = result.text.trim();
-        }
-      }
-    } catch {
-      // The local sentence is enough for the approval draft.
+      const result = await this.adapter.chat(
+        {
+          model: this.settings.get("agent"),
+          messages: [
+            {
+              role: "user",
+              content: `Write a short reply from ${MAIL_USER}. Do not copy the original message.\nFrom: ${message.from}\nSubject: ${message.subject}\n\n${message.body}`,
+            },
+          ],
+        },
+        () => {},
+      );
+      draft = result.text.trim();
+    } catch (error) {
+      const detail =
+        error instanceof Error
+          ? error.message
+          : "The agent model did not answer.";
+      throw new Error(
+        detail.includes("ollama pull") || detail.includes("not running")
+          ? detail
+          : `The agent model could not draft a reply. ${detail}`,
+      );
+    }
+    if (draft.length === 0 || draft === message.body.trim()) {
+      throw new Error(
+        "The agent model did not write a reply, so nothing was sent to Approvals.",
+      );
     }
     const subject = message.subject.startsWith("Re:")
       ? message.subject
       : `Re: ${message.subject}`;
+    const to = replyRecipients(message);
     const task = this.approvals.runTask("mail", async (ctx) => {
       const result = await ctx.request({
         summary: `Reply to ${message.thread}`,
@@ -501,7 +525,7 @@ export class DesktopApp {
       writeReply({
         outbox: join(this.paths.root, "outbox"),
         originalId: message.id,
-        to: message.from,
+        to,
         subject,
         body: result.draft,
       });
@@ -509,6 +533,7 @@ export class DesktopApp {
     const approvalId = this.approvals.pending().at(-1)?.id ?? "";
     if (approvalId.length > 0) {
       this.mailTasks.set(approvalId, task);
+      this.openReplies.set(id, approvalId);
     }
     return { approvalId, draft, thread: message.thread };
   }

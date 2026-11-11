@@ -167,6 +167,28 @@ export function sendStillNeedsApproval(): string {
   return outcome.reason;
 }
 
+/** Reply-all, leaving out this user's own address. */
+export function replyRecipients(
+  message: { from: string; to: string },
+  self = MAIL_USER,
+): string {
+  const seen = new Set<string>();
+  const kept: string[] = [];
+  for (const raw of `${message.from},${message.to}`.split(/[,;]/)) {
+    const address = raw.trim();
+    const key = address.toLowerCase();
+    if (address.length === 0 || key === self.toLowerCase() || seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    kept.push(address);
+  }
+  if (kept.length === 0) {
+    throw new Error("There is nobody else to reply to on this message.");
+  }
+  return kept.join(", ");
+}
+
 export function writeReply(options: {
   outbox: string;
   originalId: string;
