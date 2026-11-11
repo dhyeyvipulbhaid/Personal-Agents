@@ -132,6 +132,9 @@ export function machineChecks(input: {
 }
 
 export function adviceFor(check: Check): string {
+  if (check.name === "outlook") {
+    return outlookAdvice(check);
+  }
   if (check.status === "available") {
     return "";
   }
@@ -154,6 +157,34 @@ export function adviceFor(check: Check): string {
     return "";
   }
   return "This check failed. The cause is listed on the card.";
+}
+
+function outlookAdvice(check: Check): string {
+  if (check.status === "available") {
+    return "";
+  }
+  if (check.cause === "not installed") {
+    return "Install Outlook and sign in on this Mac or Windows PC. Mail is using the demo mailbox.";
+  }
+  if (check.cause === "not running") {
+    return "Open Outlook and leave it running. Mail is using the demo mailbox.";
+  }
+  if (check.cause === "not signed in") {
+    return "Sign in to Outlook on this computer. Personal Agents does not ask for a second login. Mail is using the demo mailbox.";
+  }
+  if (check.cause === "automation blocked") {
+    return "Allow Automation for Outlook in System Settings → Privacy & Security → Automation. Mail is using the demo mailbox.";
+  }
+  if (check.cause === "new outlook") {
+    return "New Outlook has no usable scripting. Open classic Outlook. Mail is using the demo mailbox.";
+  }
+  if (check.cause === "not connected") {
+    return "Use Connect Outlook on Mail or Capabilities. Personal Agents asks once before it reads mail.";
+  }
+  if (check.cause === "did not answer") {
+    return "Outlook did not answer. Leave it open and try again. Mail is using the demo mailbox.";
+  }
+  return "Outlook not connected — using demo mailbox.";
 }
 
 function commandOutput(command: string, args: string[]): string {

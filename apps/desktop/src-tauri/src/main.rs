@@ -39,6 +39,7 @@ fn main() {
             host::chat_new,
             host::chat_open,
             host::mail_state,
+            host::mail_connect,
             host::mail_draft,
             host::memory_list,
             host::memory_remember,

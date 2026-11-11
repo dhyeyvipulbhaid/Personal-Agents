@@ -20,6 +20,15 @@ function snoozeUntil(choice) {
 function pillLabels(item) {
   const effects = Array.isArray(item.effects) ? item.effects : [];
   const capability = item.capability || "";
+  if (capability === "mail.read") {
+    return ["Reads Outlook on this computer"];
+  }
+  if (capability === "mail.draft") {
+    return ["Saves a draft in Outlook"];
+  }
+  if (capability === "mail.send" && /outlook/i.test(item.summary || "")) {
+    return ["Sends from Outlook"];
+  }
   if (capability === "mail.send" || effects.includes("sends")) {
     return ["Writes to local outbox"];
   }
@@ -173,8 +182,14 @@ function render(next) {
         act("edit", item.id, { draft: evidence.value }),
       ),
       button("Deny", "danger", async () => {
-        if (!lockCard(block, "Denied")) {
+        const mailWrite =
+          item.capability === "mail.draft" || item.capability === "mail.send";
+        const deniedText = mailWrite ? "The reply was not sent." : "Denied";
+        if (!lockCard(block, deniedText)) {
           return;
+        }
+        if (mailWrite && hint) {
+          hint.textContent = "The reply was not sent.";
         }
         await act("deny", item.id, {});
       }),

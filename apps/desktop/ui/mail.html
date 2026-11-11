@@ -12,7 +12,7 @@
       <header class="page-head">
         <div>
           <h1 class="page-title">Mail</h1>
-          <p class="lede">The demo mailbox copied onto this machine. Nothing is sent to a server.</p>
+          <p id="mail-lede" class="lede">The demo mailbox copied onto this machine. Nothing is sent to a server.</p>
         </div>
       </header>
       <section class="card">
@@ -24,6 +24,9 @@
         <ul id="follow-ups" class="plain-list"></ul>
       </section>
       <p id="mail-status" class="notice"></p>
+      <p id="mail-connect-row" hidden>
+        <button type="button" id="connect-outlook">Connect Outlook</button>
+      </p>
       <ol id="messages" class="message-list"></ol>
     </template>
     <script src="shortcut.js"></script>

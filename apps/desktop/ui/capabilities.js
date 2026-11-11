@@ -25,6 +25,9 @@ function labelFor(check) {
   if (name === "ollama") {
     return { title: "Ollama", detail: check.cause || "" };
   }
+  if (name === "outlook") {
+    return { title: "Outlook", detail: check.cause || "" };
+  }
   return { title: name, detail: check.cause || "" };
 }
 
@@ -62,6 +65,28 @@ function render(report) {
       const line = document.createElement("p");
       line.textContent = permission;
       article.append(line);
+    }
+    if (card.connect) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = "Connect Outlook";
+      button.addEventListener("click", () => {
+        button.disabled = true;
+        window.pa
+          .invoke("mail_connect")
+          .then(() => {
+            button.textContent = "Waiting in Approvals";
+          })
+          .catch((error) => {
+            button.disabled = false;
+            button.textContent = "Connect Outlook";
+            const note = document.createElement("p");
+            note.className = "notice";
+            note.textContent = window.pa.explain(error, "Outlook");
+            article.append(note);
+          });
+      });
+      article.append(button);
     }
     plugins.append(article);
   }

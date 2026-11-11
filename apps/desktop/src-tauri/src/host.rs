@@ -382,9 +382,28 @@ pub async fn chat_open(
     .await
 }
 
+const MAIL_TIMEOUT: Duration = Duration::from_secs(30);
+
 #[tauri::command]
 pub async fn mail_state(host: tauri::State<'_, HostHandle>) -> Result<String, String> {
-    call_host(host, "mail_state").await
+    call_host_params(
+        host,
+        "mail_state",
+        serde_json::json!({}),
+        MAIL_TIMEOUT,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn mail_connect(host: tauri::State<'_, HostHandle>) -> Result<String, String> {
+    call_host_params(
+        host,
+        "mail_connect",
+        serde_json::json!({}),
+        MAIL_TIMEOUT,
+    )
+    .await
 }
 
 #[tauri::command]

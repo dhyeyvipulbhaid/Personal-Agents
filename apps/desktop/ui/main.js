@@ -147,7 +147,10 @@ function digestCard() {
     mailState.data?.digest,
     "Open mail",
     "mail.html",
-    "Threads from the last day of the sample mailbox.",
+    mailState.data?.source === "outlook"
+      ? "No threads in the last day."
+      : "Threads from the last day of the sample mailbox.",
+    true,
   );
 }
 
@@ -162,14 +165,25 @@ function followCard() {
   );
 }
 
-function listCard(title, error, items, action, href, empty) {
-  const article = card(title, error ? "bad" : "good", "Sample mailbox");
+function listCard(title, error, items, action, href, empty, showStatus) {
+  const outlook = mailState.data?.source === "outlook";
+  const article = card(
+    title,
+    error ? "bad" : "good",
+    outlook ? "Outlook" : "Sample mailbox",
+  );
   if (error) {
     const note = document.createElement("p");
     note.className = "notice";
     note.textContent = error;
     article.append(note);
     return article;
+  }
+  if (showStatus && mailState.data?.status && !outlook) {
+    const note = document.createElement("p");
+    note.className = "muted";
+    note.textContent = mailState.data.status;
+    article.append(note);
   }
   const list = document.createElement("ul");
   list.className = "plain-list";

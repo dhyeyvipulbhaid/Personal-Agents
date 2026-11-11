@@ -82,6 +82,7 @@ export function followUps(
   db: Database,
   now = SAMPLE_NOW,
   days = FOLLOW_UP_DAYS,
+  self = MAIL_USER,
 ): string[] {
   const handled = new Set(
     (
@@ -101,7 +102,7 @@ export function followUps(
   return [...latest.values()]
     .filter(
       (message) =>
-        message.from !== MAIL_USER &&
+        !isFromSelf(message.from, self) &&
         Date.parse(message.date) < cutoff &&
         !handled.has(message.thread),
     )
@@ -175,7 +176,7 @@ export function replyRecipients(
   const seen = new Set<string>();
   const kept: string[] = [];
   for (const raw of `${message.from},${message.to}`.split(/[,;]/)) {
-    const address = raw.trim();
+    const address = emailIn(raw);
     const key = address.toLowerCase();
     if (address.length === 0 || key === self.toLowerCase() || seen.has(key)) {
       continue;
@@ -217,6 +218,19 @@ export function writeReply(options: {
   ].join("\r\n");
   writeFileSync(file, text);
   return file;
+}
+
+function emailIn(raw: string): string {
+  const trimmed = raw.trim();
+  const match = trimmed.match(/<([^>]+)>/);
+  return (match?.[1] ?? trimmed).trim();
+}
+
+function isFromSelf(from: string, self: string): boolean {
+  if (from === self) {
+    return true;
+  }
+  return emailIn(from).toLowerCase() === self.toLowerCase();
 }
 
 function rootSubject(

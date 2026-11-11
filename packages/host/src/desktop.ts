@@ -25,15 +25,14 @@ import {
 import { type DemoPaths, seedDemoData } from "./data/demo.ts";
 import { loadRevenueView, type RevenueView } from "./files/snapshot.ts";
 import type { RevenueRow } from "./files/table.ts";
+import { replyRecipients } from "./mail/mail.ts";
 import {
-  followUps,
-  loadMailbox,
-  openMailState,
-  recentThreads,
-  replyRecipients,
-  writeReply,
-} from "./mail/mail.ts";
+  createLocalOutlook,
+  fallbackLine,
+  type OutlookAdapter,
+} from "./mail/outlook.ts";
 import { MAIL_USER } from "./mail/sample.ts";
+import { LocalMail } from "./mail/source.ts";
 import { MemoryStore } from "./memory/memory.ts";
 import {
   type ModelAdapter,
@@ -65,6 +64,7 @@ type PluginCard = {
   health: "healthy" | "unhealthy";
   summary: string;
   permissions: string[];
+  connect?: boolean;
 };
 
 const PERMISSIONS: Omit<PluginCard, "health">[] = [
@@ -145,6 +145,7 @@ export type DesktopOptions = {
     send(method: string, params?: Record<string, unknown>): Promise<unknown>;
     close(): Promise<void>;
   }>;
+  outlook?: OutlookAdapter;
 };
 
 /** The packaged host: widgets, chat, sample data, and the pages' RPC methods. */
@@ -158,6 +159,7 @@ export class DesktopApp {
   private readonly approvals: Approvals;
   private readonly builder: WidgetBuilder;
   private readonly paths: DemoPaths;
+  private readonly mail: LocalMail;
   private readonly sessions: Session[] = [];
   private activeId = "";
   private nextSession = 0;
@@ -226,6 +228,13 @@ export class DesktopApp {
       this.settings,
     );
     this.paths = seedDemoData(options.dataDir);
+    this.mail = new LocalMail({
+      mailDir: this.paths.mailDir,
+      mailDb: this.paths.mailDb,
+      outbox: join(this.paths.root, "outbox"),
+      outlook: options.outlook ?? createLocalOutlook(),
+      now: this.now,
+    });
   }
 
   async start(): Promise<void> {
@@ -309,7 +318,8 @@ export class DesktopApp {
         }
         return JSON.stringify(this.view(session));
       },
-      mail_state: () => JSON.stringify(this.mailbox()),
+      mail_state: async () => JSON.stringify(await this.mail.snapshot()),
+      mail_connect: async () => JSON.stringify(await this.connectOutlook()),
       mail_draft: async (params) =>
         JSON.stringify(await this.draftReply(params)),
       memory_list: () => JSON.stringify(this.memory.view()),
@@ -351,35 +361,6 @@ export class DesktopApp {
     return this.revenue().rows;
   }
 
-  private mailbox() {
-    try {
-      const messages = loadMailbox(this.paths.mailDir);
-      const db = openMailState(this.paths.mailDb);
-      try {
-        return {
-          count: messages.length,
-          followUps: followUps(messages, db),
-          digest: recentThreads(messages),
-          messages: messages.map((message) => ({
-            id: message.id,
-            from: message.from,
-            subject: message.subject,
-            date: message.date,
-            thread: message.thread,
-            body: message.body,
-          })),
-        };
-      } finally {
-        db.close();
-      }
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : "unreadable";
-      throw new Error(
-        `The demo mailbox could not be read (${detail}). Messages live in ${this.paths.mailDir}. Reopen the app to copy the sample mailbox again.`,
-      );
-    }
-  }
-
   private async capabilityReport() {
     const running = (await this.probe()) === "running";
     let models: string[] = [];
@@ -392,6 +373,8 @@ export class DesktopApp {
         models = [];
       }
     }
+    const outlook = await this.mail.describe();
+    const mailReadable = canRead(this.paths.mailDir);
     const checks = machineChecks({
       folders: [
         { path: this.paths.root, readable: true },
@@ -402,7 +385,15 @@ export class DesktopApp {
       })),
       ollamaPortOpen: running,
       models,
-    }).map((check) => ({ ...check, advice: adviceFor(check) }));
+    })
+      .concat([
+        {
+          name: "outlook",
+          status: outlook.connected ? "available" : "blocked",
+          cause: outlook.cause,
+        },
+      ])
+      .map((check) => ({ ...check, advice: adviceFor(check) }));
     const loaded = new Map(
       this.kernel.loaded().map((plugin) => [plugin.id, plugin.health]),
     );
@@ -410,20 +401,25 @@ export class DesktopApp {
       (check) =>
         check.name.startsWith("browser ") && check.status === "available",
     );
-    const plugins: PluginCard[] = PERMISSIONS.map((card) => ({
-      ...card,
-      health: cardHealth(card.id, {
+    const plugins: PluginCard[] = PERMISSIONS.map((card) => {
+      const health = cardHealth(card.id, {
         loaded: loaded.get(card.id),
         revenue: canRead(this.paths.revenueFile),
-        mail: checks.some(
-          (check) =>
-            check.name.includes(this.paths.mailDir) &&
-            check.status === "available",
-        ),
+        mail: mailReadable || outlook.connected,
         ollama: running,
         browser: browsersInstalled,
-      }),
-    }));
+      });
+      if (card.id !== "mail") {
+        return { ...card, health };
+      }
+      return {
+        ...card,
+        health,
+        summary: outlook.summary,
+        permissions: outlook.permissions,
+        connect: outlook.needsConnect,
+      };
+    });
     return { checks, plugins };
   }
 
@@ -548,13 +544,45 @@ export class DesktopApp {
     return JSON.stringify(this.view(session));
   }
 
+  private async connectOutlook() {
+    const status = await this.mail.detectFresh();
+    if (status.state !== "signed-in") {
+      throw new Error(fallbackLine(status, this.mail.granted()));
+    }
+    if (this.mail.granted()) {
+      return { connected: true, approvalId: "" };
+    }
+    const existing = this.approvals
+      .pending()
+      .find((item) => item.capability === "mail.read");
+    if (existing) {
+      return { connected: false, approvalId: existing.id };
+    }
+    const started = this.mail.requestRead(this.approvals);
+    if (started.approvalId.length > 0) {
+      this.mailTasks.set(
+        started.approvalId,
+        started.task.catch(() => {
+          this.audit({
+            at: new Date(this.now()).toISOString(),
+            summary: "Outlook was not connected.",
+            decision: "error",
+          });
+        }),
+      );
+    }
+    return { connected: false, approvalId: started.approvalId };
+  }
+
   private async draftReply(params: unknown) {
-    const messages = loadMailbox(this.paths.mailDir);
+    const snap = await this.mail.snapshot();
     const id = stringField(params, "id");
-    const message = messages.find((item) => item.id === id);
+    const message = snap.messages.find((item) => item.id === id);
     if (!message) {
       throw new Error(
-        "That message is not in the local mailbox. Refresh Mail and try the draft again.",
+        snap.source === "outlook"
+          ? "That message is not in Outlook. Refresh Mail and try the draft again."
+          : "That message is not in the local mailbox. Refresh Mail and try the draft again.",
       );
     }
     const waiting = this.openReplies.get(id);
@@ -569,6 +597,17 @@ export class DesktopApp {
     if ((await this.probe()) !== "running") {
       throw new Error(ollamaDownMessage(this.settings.get("agent")));
     }
+    let body = message.body;
+    if (snap.source === "outlook") {
+      const full = await this.mail.read(id);
+      if (full.trim().length > 0) {
+        body = full.trim();
+      }
+    }
+    const self =
+      snap.source === "outlook" && snap.account.length > 0
+        ? snap.account
+        : MAIL_USER;
     let draft = "";
     try {
       const result = await this.adapter.chat(
@@ -577,7 +616,7 @@ export class DesktopApp {
           messages: [
             {
               role: "user",
-              content: `Write a short reply from ${MAIL_USER}. Do not copy the original message.\nFrom: ${message.from}\nSubject: ${message.subject}\n\n${message.body}`,
+              content: `Write a short reply from ${self}. Do not copy the original message.\nFrom: ${message.from}\nSubject: ${message.subject}\n\n${body}`,
             },
           ],
         },
@@ -595,7 +634,7 @@ export class DesktopApp {
           : `The agent model could not draft a reply. ${detail}`,
       );
     }
-    if (draft.length === 0 || draft === message.body.trim()) {
+    if (draft.length === 0 || draft === body.trim()) {
       throw new Error(
         "The agent model did not write a reply, so nothing was sent to Approvals.",
       );
@@ -603,31 +642,26 @@ export class DesktopApp {
     const subject = message.subject.startsWith("Re:")
       ? message.subject
       : `Re: ${message.subject}`;
-    const to = replyRecipients(message);
-    const task = this.approvals.runTask("mail", async (ctx) => {
-      const result = await ctx.request({
-        summary: `Reply to ${message.thread}`,
-        draft,
-        capability: "mail.send",
-        effects: ["sends"],
-      });
-      if (result.decision !== "approved") {
-        return;
-      }
-      writeReply({
-        outbox: join(this.paths.root, "outbox"),
-        originalId: message.id,
-        to,
-        subject,
-        body: result.draft,
+    const to = replyRecipients(message, self);
+    const started = this.mail.startReply(
+      this.approvals,
+      { message, to, subject, draft, source: snap.source },
+      (approvalId) => {
+        this.openReplies.set(id, approvalId);
+      },
+    );
+    const task = started.task.catch(() => {
+      this.audit({
+        at: new Date(this.now()).toISOString(),
+        summary: "Outlook could not finish the mail action.",
+        decision: "error",
       });
     });
-    const approvalId = this.approvals.pending().at(-1)?.id ?? "";
-    if (approvalId.length > 0) {
-      this.mailTasks.set(approvalId, task);
-      this.openReplies.set(id, approvalId);
+    if (started.approvalId.length > 0) {
+      this.mailTasks.set(started.approvalId, task);
+      this.openReplies.set(id, started.approvalId);
     }
-    return { approvalId, draft, thread: message.thread };
+    return { approvalId: started.approvalId, draft, thread: message.thread };
   }
 
   private async runLocalTool(
@@ -691,11 +725,14 @@ export class DesktopApp {
       return JSON.stringify({ total: view.total, rows: view.rows });
     }
     if (call.name === "mail.summary") {
-      const mail = this.mailbox();
+      const mail = await this.mail.snapshot();
       return JSON.stringify({
         count: mail.count,
         digest: mail.digest,
         followUps: mail.followUps,
+        unread: mail.unread,
+        source: mail.source,
+        status: mail.status,
       });
     }
     if (call.name === "memory.recall") {
@@ -965,7 +1002,8 @@ const LOCAL_TOOLS: ToolDefinition[] = [
     type: "function",
     function: {
       name: "mail.summary",
-      description: "Read the local mailbox digest and follow-ups.",
+      description:
+        "Read the mailbox digest, follow-ups, and unread subjects. Uses Outlook on this computer when it is connected.",
       parameters: { type: "object", properties: {} },
     },
   },

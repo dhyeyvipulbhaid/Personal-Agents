@@ -1,6 +1,10 @@
 const digest = document.getElementById("digest");
 const followUps = document.getElementById("follow-ups");
 const messages = document.getElementById("messages");
+const status = document.getElementById("mail-status");
+const lede = document.getElementById("mail-lede");
+const connectRow = document.getElementById("mail-connect-row");
+const connectButton = document.getElementById("connect-outlook");
 
 function names(node, values, empty) {
   node.replaceChildren();
@@ -26,15 +30,56 @@ function formatDate(value) {
 }
 
 function render(state) {
-  names(digest, state.digest, "No threads in the sample digest.");
-  names(followUps, state.followUps, "No follow-ups in the sample mailbox.");
+  const outlook = state.source === "outlook";
+  if (lede) {
+    lede.textContent = outlook
+      ? "Mail from Outlook on this computer. A draft and a send each wait for approval."
+      : "The demo mailbox copied onto this machine. Nothing is sent to a server.";
+  }
+  if (status) {
+    status.textContent = state.status || "";
+    status.className = outlook
+      ? "notice ok"
+      : state.needsConnect
+        ? "notice"
+        : "muted";
+  }
+  if (connectRow) {
+    connectRow.hidden = !state.needsConnect;
+  }
+  names(
+    digest,
+    state.digest,
+    outlook
+      ? "No threads in the last day."
+      : "No threads in the sample digest.",
+  );
+  names(
+    followUps,
+    state.followUps,
+    outlook ? "No follow-ups." : "No follow-ups in the sample mailbox.",
+  );
   messages.replaceChildren();
   for (const message of state.messages ?? []) {
     const item = document.createElement("li");
     const from = document.createElement("span");
     from.textContent = message.from;
-    const subject = document.createElement("span");
-    subject.textContent = message.subject;
+    const subject = document.createElement("div");
+    const title = document.createElement("span");
+    title.textContent = message.subject;
+    subject.append(title);
+    if (outlook && message.unread) {
+      const mark = document.createElement("span");
+      mark.className = "muted";
+      mark.textContent = " Unread";
+      subject.append(mark);
+    }
+    if (outlook && message.body) {
+      const preview = document.createElement("p");
+      preview.className = "muted";
+      preview.textContent = String(message.body).slice(0, 180);
+      subject.append(preview);
+    }
     const date = document.createElement("time");
     date.dateTime = message.date;
     date.textContent = formatDate(message.date);
@@ -81,6 +126,25 @@ function draftControl(message) {
   wrap.className = "draft-action";
   wrap.append(button, note);
   return wrap;
+}
+
+if (connectButton) {
+  connectButton.addEventListener("click", () => {
+    connectButton.disabled = true;
+    window.pa
+      .invoke("mail_connect")
+      .then(() => {
+        connectButton.textContent = "Waiting in Approvals";
+      })
+      .catch((error) => {
+        connectButton.disabled = false;
+        connectButton.textContent = "Connect Outlook";
+        if (status) {
+          status.className = "notice";
+          status.textContent = window.pa.explain(error, "Outlook");
+        }
+      });
+  });
 }
 
 async function showMail() {
