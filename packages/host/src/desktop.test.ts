@@ -7,6 +7,7 @@ import { DesktopApp } from "./desktop.ts";
 import { revenueTotal } from "./files/revenue.ts";
 import { rowsFromCsv } from "./files/table.ts";
 import type { ChatRequest, ModelAdapter } from "./models/adapter.ts";
+import { OllamaConnector } from "./models/ollama.ts";
 
 test("the sample revenue file ships with the app and totals 220", () => {
   const text = readFileSync(
@@ -108,6 +109,97 @@ test("a stated fact is recalled in a later chat with its session source", async 
     await methods.memory_delete({ id: "fact-1" });
     expect(JSON.parse(await methods.memory_list({}))).toEqual([]);
   } finally {
+    app.close();
+  }
+});
+
+test("a chat request sends tools to ollama and runs the tool call", async () => {
+  const bodies: {
+    model?: string;
+    tools?: { function: { name: string } }[];
+    messages?: { role: string; content: string }[];
+  }[] = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.includes("example.com")) {
+      return new Response("<html><title>Example Domain</title></html>");
+    }
+    return originalFetch(input);
+  }) as typeof fetch;
+  const connector = new OllamaConnector(async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as (typeof bodies)[number];
+    bodies.push(body);
+    if (bodies.length === 1) {
+      return new Response(
+        JSON.stringify({
+          message: {
+            content: "",
+            tool_calls: [
+              {
+                function: {
+                  name: "browser.open",
+                  arguments: { url: "https://example.com" },
+                },
+              },
+            ],
+          },
+          done: true,
+        }),
+      );
+    }
+    return new Response(
+      JSON.stringify({
+        message: { content: "The page title is Example Domain." },
+        done: true,
+      }),
+    );
+  });
+  const dir = mkdtempSync(join(tmpdir(), "pa-chat-tools-"));
+  const app = new DesktopApp({
+    dataDir: dir,
+    adapter: connector,
+    probe: running,
+  });
+  await app.start();
+  const methods = app.methods();
+  try {
+    const send = Promise.resolve(
+      methods.chat_send({
+        text: "open example.com in Chrome and tell me the page title.",
+      }),
+    );
+    const first = await Promise.race([
+      send.then((raw) => ({ kind: "sent" as const, raw })),
+      waitForApproval(methods),
+    ]);
+    if (first.kind === "approval") {
+      await methods.approval_act({
+        action: "approve",
+        id: first.id,
+        draft: "",
+        instruction: "",
+        scope: "once",
+        until: 0,
+      });
+      await send;
+    }
+    const offered = bodies[0]?.tools?.map((tool) => tool.function.name) ?? [];
+    expect(bodies[0]?.model).toBe("qwen3:4b");
+    expect(offered).toContain("browser.open");
+    expect(offered).toContain("mail.summary");
+    expect(
+      bodies[0]?.messages?.some(
+        (message) => message.role === "system" && /tool/i.test(message.content),
+      ),
+    ).toBe(true);
+    expect(
+      bodies[1]?.messages?.some((message) =>
+        message.content.includes("Example Domain"),
+      ),
+    ).toBe(true);
+  } finally {
+    globalThis.fetch = originalFetch;
     app.close();
   }
 });
@@ -290,6 +382,21 @@ test("the builder plans a revenue number widget and waits for approval", async (
 });
 
 const running = async () => "running" as const;
+
+async function waitForApproval(
+  methods: ReturnType<DesktopApp["methods"]>,
+): Promise<{ kind: "approval"; id: string } | { kind: "none" }> {
+  const started = Date.now();
+  while (Date.now() - started < 800) {
+    const pending = JSON.parse(await methods.approvals({})) as { id: string }[];
+    const id = pending[0]?.id ?? "";
+    if (id.length > 0) {
+      return { kind: "approval", id };
+    }
+    await Bun.sleep(20);
+  }
+  return { kind: "none" };
+}
 
 async function harness(
   chat?: ModelAdapter["chat"],

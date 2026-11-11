@@ -42,12 +42,22 @@ export function probeCapabilities(input: ProbeInput): Check[] {
   checks.push({
     name: "ollama",
     status: ollamaReady ? "available" : "blocked",
-    cause: input.ollamaPortOpen ? "no models" : "port closed",
+    cause: ollamaCause(input.ollamaPortOpen, input.models),
   });
   for (const model of input.models) {
     checks.push({ name: `model ${model}`, status: "available", cause: "" });
   }
   return checks;
+}
+
+function ollamaCause(portOpen: boolean, models: string[]): string {
+  if (!portOpen) {
+    return "port closed";
+  }
+  if (models.length === 0) {
+    return "no models";
+  }
+  return models.join(", ");
 }
 
 export function doctorText(checks: Check[]): string {

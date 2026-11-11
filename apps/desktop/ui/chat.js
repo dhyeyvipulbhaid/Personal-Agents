@@ -88,7 +88,11 @@ function renderMessages(messages) {
       const text = document.createElement("p");
       text.textContent = message.text;
       card.append(text);
-      if (message.approvalId && !String(message.text).includes("(approved)")) {
+      if (
+        message.approvalId &&
+        !String(message.text).includes("(approved)") &&
+        !String(message.text).includes("(denied)")
+      ) {
         const button = document.createElement("button");
         button.type = "button";
         button.textContent = "Approve";

@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { type ActivityEntry, Approvals } from "./approvals/approvals.ts";
 import { decide } from "./broker/broker.ts";
+import { BrowserSession } from "./browser/session.ts";
 import {
   previewWidget,
   specFromRequest,
@@ -148,6 +149,7 @@ export class DesktopApp {
   private notice = "";
   private readonly mailTasks = new Map<string, Promise<void>>();
   private readonly openReplies = new Map<string, string>();
+  private readonly browser: BrowserSession;
 
   constructor(options: DesktopOptions) {
     this.adapter =
@@ -155,6 +157,7 @@ export class DesktopApp {
     this.probe = options.probe ?? (() => probeOllama());
     this.now = options.now ?? Date.now;
     this.approvals = new Approvals(options.audit ?? (() => {}));
+    this.browser = new BrowserSession(this.approvals);
     this.builder = new WidgetBuilder(
       this.kernel,
       this.approvals,
@@ -420,22 +423,16 @@ export class DesktopApp {
             .map((fact) => `${fact.text} (source ${fact.source})`)
             .join("\n")
         : "";
-    const context = [toolPrompt(kind), remembered]
+    const context = [toolPrompt(), remembered]
       .filter((part) => part.length > 0)
       .join("\n");
     session.streaming = true;
     try {
-      await session.chat.send(
-        text,
-        context.length > 0 ? context : undefined,
-        kind
-          ? {
-              model: this.settings.get("agent"),
-              definitions: LOCAL_TOOLS,
-              runTool: (call) => this.runLocalTool(call),
-            }
-          : undefined,
-      );
+      await session.chat.send(text, context, {
+        model: kind ? this.settings.get("agent") : this.settings.get("chat"),
+        definitions: LOCAL_TOOLS,
+        runTool: (call) => this.runLocalTool(call),
+      });
       for (const fact of recalled) {
         session.chat.messages.push({
           role: "memory",
@@ -539,6 +536,9 @@ export class DesktopApp {
   }
 
   private async runLocalTool(call: ToolCall): Promise<string> {
+    if (call.name === "browser.open") {
+      return this.openBrowser(call.arguments);
+    }
     if (call.name === "revenue.read") {
       const view = this.revenue();
       return JSON.stringify({ total: view.total, rows: view.rows });
@@ -564,6 +564,37 @@ export class DesktopApp {
       return JSON.stringify(facts);
     }
     throw new Error(`Unknown tool ${call.name}`);
+  }
+
+  private async openBrowser(raw: string): Promise<string> {
+    const url = browserUrl(raw);
+    const session = this.ensure();
+    const visit = this.browser.visit(url);
+    const item = this.approvals.pending().at(-1);
+    const approvalId = item?.capability === "browser.visit" ? item.id : "";
+    if (approvalId.length > 0 && item) {
+      session.chat.messages.push({
+        role: "approval",
+        text: item.summary,
+        approvalId,
+      });
+    }
+    await visit;
+    const opened = this.browser.liveView().includes(`open ${url}`);
+    const entry = session.chat.messages.find(
+      (message) => message.approvalId === approvalId,
+    );
+    if (entry) {
+      const mark = opened ? "(approved)" : "(denied)";
+      if (!entry.text.includes(mark)) {
+        entry.text = `${entry.text} ${mark}`;
+      }
+    }
+    if (!opened) {
+      return JSON.stringify({ url, opened: false, title: "" });
+    }
+    const title = await readPageTitle(url);
+    return JSON.stringify({ url, opened: true, title });
   }
 
   private groundRevenue(session: Session): void {
@@ -712,6 +743,19 @@ const LOCAL_TOOLS: ToolDefinition[] = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "browser.open",
+      description:
+        "Open a URL in the browser and return the page title. The first visit to a site waits for approval.",
+      parameters: {
+        type: "object",
+        properties: { url: { type: "string" } },
+        required: ["url"],
+      },
+    },
+  },
 ];
 
 function localQuestion(text: string): "revenue" | "mail" | "memory" | null {
@@ -734,11 +778,37 @@ function localQuestion(text: string): "revenue" | "mail" | "memory" | null {
   return null;
 }
 
-function toolPrompt(kind: "revenue" | "mail" | "memory" | null): string {
-  if (!kind) {
+function toolPrompt(): string {
+  return "You have tools. Call revenue.read for revenue.csv, mail.summary for the mailbox, memory.recall for saved facts, and browser.open to open a page and read its title. The first visit to a site waits for approval. Use the tools instead of saying you cannot open a browser or access a website.";
+}
+
+function browserUrl(raw: string): string {
+  let text = raw.trim();
+  if (text.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(text) as { url?: string };
+      if (typeof parsed.url === "string" && parsed.url.trim().length > 0) {
+        text = parsed.url.trim();
+      }
+    } catch {
+      // The model sometimes sends a URL as plain text.
+    }
+  }
+  if (!/^https?:\/\//i.test(text)) {
+    text = `https://${text}`;
+  }
+  return new URL(text).toString();
+}
+
+async function readPageTitle(url: string): Promise<string> {
+  try {
+    const response = await fetch(url);
+    const html = (await response.text()).slice(0, 50_000);
+    const match = /<title[^>]*>([^<]*)<\/title>/i.exec(html);
+    return (match?.[1] ?? "").replaceAll(/\s+/g, " ").trim();
+  } catch {
     return "";
   }
-  return "You can read this machine's files with tools. Call revenue.read for revenue.csv, mail.summary for the mailbox, and memory.recall for saved facts. Do not say you lack file access.";
 }
 
 function deniesAccess(text: string): boolean {
