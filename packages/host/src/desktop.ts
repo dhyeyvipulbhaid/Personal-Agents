@@ -2,6 +2,12 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { type ActivityEntry, Approvals } from "./approvals/approvals.ts";
 import { decide } from "./broker/broker.ts";
+import {
+  BrowserDrive,
+  chromeExecutable,
+  connectChrome,
+  type DriveResult,
+} from "./browser/drive.ts";
 import { BrowserSession } from "./browser/session.ts";
 import {
   previewWidget,
@@ -10,7 +16,11 @@ import {
   WidgetBuilder,
   type WidgetSpec,
 } from "./builder/builder.ts";
-import { adviceFor, machineChecks } from "./capabilities/live.ts";
+import {
+  adviceFor,
+  machineChecks,
+  readRemoteDebuggingPolicy,
+} from "./capabilities/live.ts";
 import { type DemoPaths, seedDemoData } from "./data/demo.ts";
 import { loadRevenueView, type RevenueView } from "./files/snapshot.ts";
 import type { RevenueRow } from "./files/table.ts";
@@ -114,10 +124,10 @@ const PERMISSIONS: Omit<PluginCard, "health">[] = [
   {
     id: "browser",
     name: "Browser",
-    summary: "Can open a page after you approve the site.",
+    summary: "Can read a page, and can drive the installed Chrome.",
     permissions: [
       "The first visit to a site waits on Approvals.",
-      "You stop the session from the browser task.",
+      "Navigate, click, and type each wait. Deny or Stop cancels that action.",
     ],
   },
 ];
@@ -128,6 +138,11 @@ export type DesktopOptions = {
   probe?: () => Promise<"running" | "stopped">;
   now?: () => number;
   audit?: (entry: ActivityEntry) => void;
+  chromePath?: string | null;
+  browserConnect?: (url: string) => Promise<{
+    send(method: string, params?: Record<string, unknown>): Promise<unknown>;
+    close(): Promise<void>;
+  }>;
 };
 
 /** The packaged host: widgets, chat, sample data, and the pages' RPC methods. */
@@ -150,6 +165,8 @@ export class DesktopApp {
   private readonly mailTasks = new Map<string, Promise<void>>();
   private readonly openReplies = new Map<string, string>();
   private readonly browser: BrowserSession;
+  private readonly drive: BrowserDrive;
+  private readonly audit: (entry: ActivityEntry) => void;
   private chatTurn = 0;
 
   constructor(options: DesktopOptions) {
@@ -157,8 +174,35 @@ export class DesktopApp {
       options.adapter ?? new OllamaConnector((url, init) => fetch(url, init));
     this.probe = options.probe ?? (() => probeOllama());
     this.now = options.now ?? Date.now;
-    this.approvals = new Approvals(options.audit ?? (() => {}));
+    this.audit = options.audit ?? (() => {});
+    this.approvals = new Approvals(this.audit);
     this.browser = new BrowserSession(this.approvals);
+    const executable =
+      options.chromePath === undefined
+        ? chromeExecutable()
+        : options.chromePath;
+    const debuggingBlocked = readRemoteDebuggingPolicy().some(
+      (policy) =>
+        policy.key === "RemoteDebuggingAllowed" && policy.value === "false",
+    );
+    this.drive = new BrowserDrive({
+      approvals: this.approvals,
+      session: this.browser,
+      audit: this.audit,
+      executable,
+      debuggingBlocked,
+      dataDir: options.dataDir,
+      now: this.now,
+      fetchPage: (url, signal) => loadPageHtml(url, signal),
+      connect:
+        options.browserConnect ??
+        ((url) =>
+          connectChrome(
+            executable ?? "",
+            join(options.dataDir, "chrome-profile"),
+            url,
+          )),
+    });
     this.builder = new WidgetBuilder(
       this.kernel,
       this.approvals,
@@ -174,6 +218,7 @@ export class DesktopApp {
 
   close(): void {
     this.kernel.close();
+    void this.drive.close();
   }
 
   methods(): RpcMethods {
@@ -563,8 +608,54 @@ export class DesktopApp {
     if (signal?.aborted) {
       return JSON.stringify({ cancelled: true });
     }
-    if (call.name === "browser.open" || call.name === "browser.read") {
+    if (call.name === "browser.open") {
       return this.openBrowser(call.arguments, signal);
+    }
+    if (call.name === "browser.read") {
+      return this.driveAction(
+        (active) => this.drive.read(browserTarget(call.arguments), active),
+        signal,
+      );
+    }
+    if (call.name === "browser.navigate") {
+      return this.driveAction(
+        (active) => this.drive.navigate(browserUrl(call.arguments), active),
+        signal,
+      );
+    }
+    if (call.name === "browser.click") {
+      const target = browserClickTarget(call.arguments);
+      if (target.length === 0) {
+        return JSON.stringify({
+          ok: false,
+          allowed: false,
+          message: "browser.click needs a selector or visible text.",
+        });
+      }
+      return this.driveAction(
+        (active) => this.drive.click(target, active),
+        signal,
+      );
+    }
+    if (call.name === "browser.type") {
+      const typed = browserTypeArgs(call.arguments);
+      if (!typed) {
+        return JSON.stringify({
+          ok: false,
+          allowed: false,
+          message: "browser.type needs a selector and text.",
+        });
+      }
+      return this.driveAction(
+        (active) => this.drive.type(typed.selector, typed.text, active),
+        signal,
+      );
+    }
+    if (call.name === "browser.screenshot") {
+      return this.driveAction(
+        (active) => this.drive.screenshot(active),
+        signal,
+      );
     }
     if (call.name === "revenue.read") {
       const view = this.revenue();
@@ -640,6 +731,67 @@ export class DesktopApp {
       });
     }
     markApproval(entry, "(approved)");
+    return JSON.stringify(result);
+  }
+
+  private async driveAction(
+    start: (signal?: AbortSignal) => Promise<DriveResult>,
+    signal?: AbortSignal,
+  ): Promise<string> {
+    if (signal?.aborted) {
+      return JSON.stringify({
+        ok: false,
+        allowed: false,
+        cancelled: true,
+        message: "Stopped.",
+      });
+    }
+    const session = this.ensure();
+    const before = new Set(this.approvals.pending().map((item) => item.id));
+    const pending = start(signal);
+    const item = this.approvals
+      .pending()
+      .find((entry) => !before.has(entry.id));
+    if (item) {
+      session.chat.messages.push({
+        role: "approval",
+        text: item.summary,
+        approvalId: item.id,
+      });
+    }
+    let result: DriveResult;
+    try {
+      result = await pending;
+    } catch (error) {
+      if (
+        signal?.aborted ||
+        (error instanceof Error && error.name === "AbortError")
+      ) {
+        markApproval(
+          session.chat.messages.find(
+            (message) => message.approvalId === item?.id,
+          ),
+          "(cancelled)",
+        );
+        return JSON.stringify({
+          ok: false,
+          allowed: false,
+          cancelled: true,
+          message: "Stopped.",
+        });
+      }
+      throw error;
+    }
+    const entry = item
+      ? session.chat.messages.find((message) => message.approvalId === item.id)
+      : undefined;
+    if (result.cancelled || signal?.aborted) {
+      markApproval(entry, "(cancelled)");
+      return JSON.stringify({ ...result, cancelled: true });
+    }
+    if (item) {
+      markApproval(entry, result.allowed ? "(approved)" : "(denied)");
+    }
     return JSON.stringify(result);
   }
 
@@ -807,12 +959,65 @@ const LOCAL_TOOLS: ToolDefinition[] = [
     function: {
       name: "browser.read",
       description:
-        "Read a page and return its title, headings, and main text. The first visit to a site waits for approval. A later read of that site does not.",
+        "Read a page and return its title, headings, and main text. Uses the open Chrome page when that page is already approved. Otherwise fetches the URL. The first visit to a site waits for approval.",
+      parameters: {
+        type: "object",
+        properties: { url: { type: "string" } },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "browser.navigate",
+      description:
+        "Open a URL in the installed Chrome window. Asks for approval before it navigates.",
       parameters: {
         type: "object",
         properties: { url: { type: "string" } },
         required: ["url"],
       },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "browser.click",
+      description:
+        "Click a CSS selector or visible text in the open Chrome page. Asks for approval first.",
+      parameters: {
+        type: "object",
+        properties: {
+          target: { type: "string" },
+          selector: { type: "string" },
+          text: { type: "string" },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "browser.type",
+      description:
+        "Type text into a field in the open Chrome page. Asks for approval first.",
+      parameters: {
+        type: "object",
+        properties: {
+          selector: { type: "string" },
+          text: { type: "string" },
+        },
+        required: ["selector", "text"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "browser.screenshot",
+      description:
+        "Save a screenshot of the open Chrome page. Does not ask again when that page is already approved.",
+      parameters: { type: "object", properties: {} },
     },
   },
 ];
@@ -838,7 +1043,65 @@ function localQuestion(text: string): "revenue" | "mail" | "memory" | null {
 }
 
 function toolPrompt(): string {
-  return "You have tools. Call revenue.read for revenue.csv, mail.summary for the mailbox, memory.recall for saved facts, and browser.read or browser.open to read a page. They return the title, headings, and main text. The first visit to a site waits for approval. Use the tools instead of saying you cannot open a browser or access a website.";
+  return "You have tools. Call revenue.read for revenue.csv, mail.summary for the mailbox, memory.recall for saved facts, and browser.read to read a page's title, headings, and main text. browser.navigate, browser.click, and browser.type drive the installed Chrome, and each one waits for approval. browser.screenshot saves the open page. The first visit to a site waits for approval. A read of a page you already approved does not ask again. Use the tools instead of saying you cannot open a browser or access a website.";
+}
+
+function browserTarget(raw: string): string | undefined {
+  const record = toolRecord(raw);
+  const url = argString(record, "url");
+  if (url.length > 0) {
+    return browserUrl(JSON.stringify({ url }));
+  }
+  if (raw.trim().startsWith("{") || raw.trim().length === 0) {
+    return undefined;
+  }
+  return browserUrl(raw);
+}
+
+function browserClickTarget(raw: string): string {
+  const record = toolRecord(raw);
+  const target = argString(record, "target", "selector", "text");
+  if (target.length > 0) {
+    return target;
+  }
+  if (raw.trim().startsWith("{")) {
+    return "";
+  }
+  return raw.trim();
+}
+
+function browserTypeArgs(
+  raw: string,
+): { selector: string; text: string } | null {
+  const record = toolRecord(raw);
+  const selector = argString(record, "selector", "target");
+  const text = typeof record.text === "string" ? record.text : "";
+  if (selector.length === 0 || text.length === 0) {
+    return null;
+  }
+  return { selector, text };
+}
+
+function toolRecord(raw: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    // The model sometimes sends plain text.
+  }
+  return {};
+}
+
+function argString(record: Record<string, unknown>, ...keys: string[]): string {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+  return "";
 }
 
 function browserUrl(raw: string): string {

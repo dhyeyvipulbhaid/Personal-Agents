@@ -4,6 +4,8 @@ Personal Agents is a workspace for an employee on a work laptop. It installs wit
 
 **Status.** Version 1 demo is described in `docs/demo/v1-script.md`. It covers install, chat, the revenue tile, mail, the builder, memory, an approval, and a browser task.
 
+Chat can read a page after one approval, and it can drive the Chrome already installed on the computer. Navigate, click, and type each ask first.
+
 The window is one shell for every page: Home, Chat, Approvals, Activity, Capabilities, Builder, Memory, and Mail. Chat, the agent, and the builder use `qwen3:4b`, `qwen3:8b`, and `qwen2.5-coder:7b`. Pull a missing model with `ollama pull <model>`. The sample revenue file and the demo mailbox are copied into the app data folder the first time the host starts. A page says what failed and what to do when a dependency is missing.
 
 ## Repo layout
