@@ -1,0 +1,9 @@
+From: c@example.com
+To: employee@example.com
+Subject: Lunch
+Date: Wed, 11 Nov 2026 07:00:00 GMT
+Message-ID: <lunch-1@example.com>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+
+Lunch note 1

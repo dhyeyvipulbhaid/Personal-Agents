@@ -1,0 +1,10 @@
+From: b@example.com
+To: employee@example.com
+Subject: Re: Desk request
+Date: Wed, 11 Nov 2026 09:00:00 GMT
+Message-ID: <desk-3@example.com>
+In-Reply-To: <desk-2@example.com>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+
+Desk request note 3
