@@ -78,8 +78,13 @@ export class FrameBuffer {
   }
 }
 
+export type RpcMethods = Record<string, () => string>;
+
 /** Handles one request body. A notification (no id) produces no response. */
-export function dispatch(message: unknown): RpcResponse | null {
+export function dispatch(
+  message: unknown,
+  methods: RpcMethods = {},
+): RpcResponse | null {
   if (!isRecord(message)) {
     return invalid(null);
   }
@@ -100,6 +105,19 @@ export function dispatch(message: unknown): RpcResponse | null {
   if (message.method === "version") {
     return { jsonrpc: "2.0", id, result: HOST_VERSION };
   }
+  const extra = methods[message.method];
+  if (extra) {
+    try {
+      return { jsonrpc: "2.0", id, result: extra() };
+    } catch (error) {
+      const text = error instanceof Error ? error.message : "call failed";
+      return {
+        jsonrpc: "2.0",
+        id,
+        error: { code: -32000, message: text },
+      };
+    }
+  }
   return {
     jsonrpc: "2.0",
     id,
@@ -108,10 +126,13 @@ export function dispatch(message: unknown): RpcResponse | null {
 }
 
 /** Turns one request body into a response frame, or null when no reply is due. */
-export function handleBody(body: Uint8Array): Uint8Array | null {
+export function handleBody(
+  body: Uint8Array,
+  methods: RpcMethods = {},
+): Uint8Array | null {
   let response: RpcResponse | null;
   try {
-    response = dispatch(JSON.parse(new TextDecoder().decode(body)));
+    response = dispatch(JSON.parse(new TextDecoder().decode(body)), methods);
   } catch {
     response = {
       jsonrpc: "2.0",
@@ -126,7 +147,7 @@ export function handleBody(body: Uint8Array): Uint8Array | null {
 }
 
 /** Reads framed requests from stdin and writes framed responses to stdout. */
-export async function serveStdio(): Promise<void> {
+export async function serveStdio(methods: RpcMethods = {}): Promise<void> {
   const frames = new FrameBuffer();
   const reader = Bun.stdin.stream().getReader();
   try {
@@ -136,7 +157,7 @@ export async function serveStdio(): Promise<void> {
         return;
       }
       for (const body of frames.push(value)) {
-        const response = handleBody(body);
+        const response = handleBody(body, methods);
         if (response !== null) {
           writeSync(1, response);
         }

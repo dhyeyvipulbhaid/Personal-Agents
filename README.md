@@ -2,14 +2,14 @@
 
 Personal Agents is a workspace for an employee on a work laptop. It installs without admin rights and runs only with that person's permissions. Chat, a widget page, a natural-language widget builder, memory, a browser agent, and an approvals list live in one app, and each part is a plugin. Version 1 is a local demo: models run in Ollama on the machine, and data comes from local files.
 
-**Status.** Milestone M2 is the local backend. The window starts the agent host and shows the host version. Plugins are not loaded yet.
+**Status.** Milestone M3 is the plugin kernel. The window loads the hello plugin in a sandboxed frame. The page switches light, dark, and follow-system theme, and passes that choice into the frame.
 
 ## Repo layout
 
 - `apps/desktop` is the desktop shell, a Tauri 2 window. The page is bundled with the app.
-- `packages/host` is the agent host, a Bun and TypeScript process. The shell starts it and exchanges JSON-RPC on stdin and stdout. It answers `ping` and `version`. It also checks that SQLite opens.
+- `packages/host` is the agent host, a Bun and TypeScript process. The shell starts it and exchanges JSON-RPC on stdin and stdout. It answers `ping`, `version`, and `widgets`. It loads plugins by calling `apply(ctx)`, and it checks that SQLite opens.
 - `docs/decisions` holds short records of stack choices. `0001-stack.md` records Tauri 2, the Bun host, SQLite, and stdio.
-- `.github/workflows/ci.yml` is the pipeline. It runs on Windows and macOS. It checks the TypeScript packages, builds the installers, and has an empty job reserved for end-to-end UI flow tests.
+- `.github/workflows/ci.yml` is the pipeline. It runs on Windows and macOS. It checks the TypeScript packages, builds the installers, and runs the hello-widget theme flow in a browser.
 
 ## Run checks locally
 
@@ -52,14 +52,14 @@ On Windows the build writes an NSIS installer at `apps/desktop/src-tauri/target/
 
 On macOS the build writes `Personal Agents.app` at `apps/desktop/src-tauri/target/release/bundle/macos/`. Zip that app to move it, unzip it into `~/Applications`, and open it. The app is not signed. macOS may ask you to confirm an unknown developer. That confirmation is not an administrator password. Remove the app by moving it from `~/Applications` to the Trash.
 
-A hand checklist for a standard account is in `docs/manual-tests/m1-install.md`. The host checklist is in `docs/manual-tests/m2-backend.md`.
+A hand checklist for a standard account is in `docs/manual-tests/m1-install.md`. The host checklist is in `docs/manual-tests/m2-backend.md`. The plugin and theme checklist is in `docs/manual-tests/m3-plugins.md`.
 
 ## Roadmap at a glance
 
 1. **Pipeline.** CI on Windows and Mac.
 2. **Installable shell.** Install the window for one user.
-3. **Local backend (now).** The window starts the agent host and shows its version.
-4. **Walking skeleton.** Load one plugin.
+3. **Local backend.** The window starts the agent host and shows its version.
+4. **Plugin kernel (now).** Load the hello widget.
 5. **Demo.** Chat, a revenue widget, a demo mailbox, the builder, memory, approvals, and the browser agent. Everything stays on the machine.
 6. **Locked-down check.** Run that demo on a machine with strict IT controls.
 7. **Pilot hardening.** Encryption, tighter approvals, and tracing, before real user data.

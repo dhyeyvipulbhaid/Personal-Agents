@@ -200,6 +200,10 @@ test("the stdio server answers ping and version", async () => {
       id: 2,
       result: HOST_VERSION,
     });
+    await send(3, "widgets");
+    const widgets = (await nextResponse()) as { result?: string };
+    const tiles = JSON.parse(widgets.result ?? "null") as { id: string }[];
+    expect(tiles.map((tile) => tile.id)).toEqual(["hello"]);
   } finally {
     proc.kill();
     await proc.exited;

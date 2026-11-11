@@ -1,10 +1,11 @@
 {
   "identifier": "default",
-  "description": "The main window shows the bundled page and the host version.",
+  "description": "The main window shows the bundled page, the host version, and plugin widgets.",
   "windows": ["main"],
   "permissions": [
     "core:default",
     "allow-host-version",
-    "allow-note-displayed-host-version"
+    "allow-note-displayed-host-version",
+    "allow-widgets"
   ]
 }
