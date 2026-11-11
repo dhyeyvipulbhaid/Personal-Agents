@@ -17,6 +17,8 @@ export function chooseRung(checks: Check[]): {
   return { rung: 0, explanation: "" };
 }
 
+export type VisitOutcome = "opened" | "denied" | "cancelled";
+
 /** Live view of a browser task. The first visit to a site waits for approval. */
 export class BrowserSession {
   readonly steps: string[] = [];
@@ -26,9 +28,9 @@ export class BrowserSession {
 
   constructor(private readonly approvals: Approvals) {}
 
-  async visit(url: string): Promise<void> {
+  async visit(url: string): Promise<VisitOutcome> {
     if (this.stopped) {
-      return;
+      return "cancelled";
     }
     const host = new URL(url).host;
     if (!this.seenHosts.has(host)) {
@@ -43,12 +45,16 @@ export class BrowserSession {
           );
         });
       });
+      if (decision.decision === "cancelled") {
+        return "cancelled";
+      }
       if (decision.decision !== "approved") {
-        return;
+        return "denied";
       }
       this.seenHosts.add(host);
     }
     this.steps.push(`open ${url}`);
+    return "opened";
   }
 
   runScript(pageSteps: string[]): void {

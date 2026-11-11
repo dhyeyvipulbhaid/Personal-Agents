@@ -38,7 +38,7 @@ export class ChatSession {
     tools?: {
       model?: string;
       definitions: ToolDefinition[];
-      runTool: (call: ToolCall) => Promise<string>;
+      runTool: (call: ToolCall, signal?: AbortSignal) => Promise<string>;
     },
   ): Promise<ChatResult> {
     this.messages.push({ role: "user", text });
@@ -81,7 +81,16 @@ export class ChatSession {
       let toolOutput = "";
       if (call && tools && known) {
         handled = true;
-        toolOutput = await tools.runTool(call);
+        toolOutput = await tools.runTool(call, controller.signal);
+        if (
+          controller.signal.aborted ||
+          toolOutput.includes('"cancelled":true')
+        ) {
+          if (assistant.text.trim().length === 0) {
+            assistant.text = "Stopped.";
+          }
+          return { text: assistant.text };
+        }
         messages.push({
           role: "assistant",
           content: result.text,
@@ -173,9 +182,18 @@ export class ChatSession {
 
   approveInline(id: string): void {
     this.approvals.approve(id);
+    this.markApproval(id, "(approved)");
+  }
+
+  denyInline(id: string): void {
+    this.approvals.deny(id);
+    this.markApproval(id, "(denied)");
+  }
+
+  private markApproval(id: string, mark: string): void {
     const entry = this.messages.find((item) => item.approvalId === id);
-    if (entry) {
-      entry.text = `${entry.text} (approved)`;
+    if (entry && !entry.text.includes(mark)) {
+      entry.text = `${entry.text} ${mark}`;
     }
   }
 }
