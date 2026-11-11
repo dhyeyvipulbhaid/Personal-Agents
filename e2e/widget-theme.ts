@@ -32,6 +32,9 @@ try {
             if (command === "widgets") {
               return Promise.resolve(JSON.stringify(payload));
             }
+            if (command === "ollama_status") {
+              return Promise.resolve("running");
+            }
             return Promise.reject(new Error(`unexpected command ${command}`));
           },
         },

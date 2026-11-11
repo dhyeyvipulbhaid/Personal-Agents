@@ -12,11 +12,49 @@ pub(crate) fn encode_frame(body: &[u8]) -> Vec<u8> {
 }
 
 pub(crate) fn encode_request(id: u64, method: &str) -> Result<Vec<u8>, String> {
-    if method.is_empty() || !method.bytes().all(|byte| byte.is_ascii_lowercase()) {
-        return Err("invalid method".into());
-    }
+    check_method(method)?;
     let body = format!(r#"{{"jsonrpc":"2.0","id":{id},"method":"{method}"}}"#);
     Ok(encode_frame(body.as_bytes()))
+}
+
+pub(crate) fn encode_request_params(
+    id: u64,
+    method: &str,
+    params: Option<&serde_json::Value>,
+) -> Result<Vec<u8>, String> {
+    let Some(params) = params else {
+        return encode_request(id, method);
+    };
+    check_method(method)?;
+    let params_text = serde_json::to_string(params).map_err(|err| err.to_string())?;
+    let body = format!(
+        r#"{{"jsonrpc":"2.0","id":{id},"method":"{method}","params":{params_text}}}"#
+    );
+    Ok(encode_frame(body.as_bytes()))
+}
+
+fn check_method(method: &str) -> Result<(), String> {
+    if method.is_empty()
+        || !method
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte == b'_')
+    {
+        return Err("invalid method".into());
+    }
+    Ok(())
+}
+
+/// An audit notification is a JSON-RPC message with method `audit` and no id.
+pub(crate) fn audit_line(body: &[u8]) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_slice(body).ok()?;
+    if value.get("method")?.as_str()? != "audit" || value.get("id").is_some() {
+        return None;
+    }
+    let line = serde_json::to_string(value.get("params")?).ok()?;
+    if line.contains('\n') || line.contains('\r') {
+        return None;
+    }
+    Some(line)
 }
 
 /// Takes one complete frame out of `buf`. `Ok(None)` means the frame is not
