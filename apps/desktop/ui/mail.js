@@ -1,7 +1,6 @@
 const digest = document.getElementById("digest");
 const followUps = document.getElementById("follow-ups");
 const messages = document.getElementById("messages");
-const status = document.getElementById("mail-status");
 
 function names(node, values, empty) {
   node.replaceChildren();
@@ -41,26 +40,47 @@ function render(state) {
     date.textContent = formatDate(message.date);
     item.append(from, subject, date);
     if (message.id) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "ghost";
-      button.textContent = "Draft reply";
-      button.addEventListener("click", () => {
-        button.disabled = true;
-        window.pa
-          .invoke("mail_draft", { id: message.id })
-          .then(() => {
-            status.textContent = `A reply to ${message.thread} is waiting on Approvals. Approve it to save the message in the local outbox.`;
-          })
-          .catch((error) => {
-            status.textContent = window.pa.explain(error, "Mail");
-            button.disabled = false;
-          });
-      });
-      item.append(button);
+      item.append(draftControl(message));
     }
     messages.append(item);
   }
+}
+
+function draftControl(message) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "ghost";
+  button.textContent = "Draft reply";
+  const note = document.createElement("p");
+  note.className = "notice";
+  note.hidden = true;
+  button.addEventListener("click", () => {
+    if (button.disabled) {
+      return;
+    }
+    button.disabled = true;
+    button.textContent = "Drafting…";
+    note.hidden = true;
+    window.pa
+      .invoke("mail_draft", { id: message.id })
+      .then(() => {
+        button.textContent = "Draft waiting in Approvals";
+        const link = document.createElement("a");
+        link.href = "approvals.html";
+        link.textContent = "Approvals";
+        button.after(link);
+      })
+      .catch((error) => {
+        button.disabled = false;
+        button.textContent = "Draft reply";
+        note.hidden = false;
+        note.textContent = window.pa.explain(error, "Draft");
+      });
+  });
+  const wrap = document.createElement("span");
+  wrap.className = "draft-action";
+  wrap.append(button, note);
+  return wrap;
 }
 
 async function showMail() {

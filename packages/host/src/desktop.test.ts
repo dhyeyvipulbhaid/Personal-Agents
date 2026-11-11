@@ -150,20 +150,30 @@ test("a revenue question uses the agent tools and answers 220", async () => {
 });
 
 test("approving a mail draft writes one local outbox file", async () => {
-  const { app, methods, dir } = await harness(async () => ({
-    text: "Thanks for the note about the North contract.",
-  }));
+  const models: string[] = [];
+  const { app, methods, dir } = await harness(async (request) => {
+    models.push(request.model);
+    return { text: "Sending the signed North contract today." };
+  }, running);
   try {
     const mail = JSON.parse(await methods.mail_state({})) as {
-      messages: { id: string; thread: string }[];
+      messages: { id: string; thread: string; from: string }[];
     };
     const north = mail.messages.find(
-      (message) => message.thread === "North contract",
+      (message) =>
+        message.thread === "North contract" &&
+        message.from !== "employee@example.com",
     );
     const drafted = JSON.parse(
       await methods.mail_draft({ id: north?.id ?? "" }),
     ) as { approvalId: string; draft: string };
-    expect(drafted.draft).toContain("North contract");
+    expect(models).toEqual(["qwen3:8b"]);
+    expect(drafted.draft).toBe("Sending the signed North contract today.");
+    await expect(methods.mail_draft({ id: north?.id ?? "" })).rejects.toThrow(
+      /already waiting/,
+    );
+    const pending = JSON.parse(await methods.approvals({})) as unknown[];
+    expect(pending).toHaveLength(1);
     await methods.approval_act({
       action: "approve",
       id: drafted.approvalId,
@@ -177,7 +187,73 @@ test("approving a mail draft writes one local outbox file", async () => {
     expect(files).toHaveLength(1);
     const text = readFileSync(join(outbox, files[0] ?? ""), "utf8");
     expect(text).toContain("In-Reply-To:");
-    expect(text).toContain("North contract");
+    expect(text).toContain("Sending the signed North contract today.");
+    expect(text).toContain("To: a@example.com");
+  } finally {
+    app.close();
+  }
+});
+
+test("a failed agent draft does not queue the source message", async () => {
+  const { app, methods } = await harness(async () => {
+    throw new Error("model timed out");
+  }, running);
+  try {
+    const mail = JSON.parse(await methods.mail_state({})) as {
+      messages: { id: string; body: string }[];
+    };
+    const source = mail.messages.find(
+      (message) => message.body === "Q4 plan note 1",
+    );
+    await expect(methods.mail_draft({ id: source?.id ?? "" })).rejects.toThrow(
+      /could not draft/,
+    );
+    expect(JSON.parse(await methods.approvals({}))).toEqual([]);
+    const echo = await harness(async () => {
+      return { text: "Q4 plan note 1" };
+    }, running);
+    try {
+      await expect(
+        echo.methods.mail_draft({ id: source?.id ?? "" }),
+      ).rejects.toThrow(/nothing was sent to Approvals/);
+      expect(JSON.parse(await echo.methods.approvals({}))).toEqual([]);
+    } finally {
+      echo.app.close();
+    }
+  } finally {
+    app.close();
+  }
+});
+
+test("a reply to your own message goes to the other recipients", async () => {
+  const { app, methods, dir } = await harness(async () => {
+    return { text: "Here is the revised Q4 plan." };
+  }, running);
+  try {
+    const mail = JSON.parse(await methods.mail_state({})) as {
+      messages: { id: string; from: string; thread: string }[];
+    };
+    const own = mail.messages.find(
+      (message) =>
+        message.thread === "Q4 plan" && message.from === "employee@example.com",
+    );
+    const drafted = JSON.parse(
+      await methods.mail_draft({ id: own?.id ?? "" }),
+    ) as { approvalId: string };
+    await methods.approval_act({
+      action: "approve",
+      id: drafted.approvalId,
+      draft: "",
+      instruction: "",
+      scope: "once",
+      until: 0,
+    });
+    const outbox = join(dir, "outbox");
+    const files = readdirSync(outbox).filter((name) => name.endsWith(".eml"));
+    const text = readFileSync(join(outbox, files[0] ?? ""), "utf8");
+    expect(text).toContain("To: a@example.com");
+    expect(text).not.toContain("To: employee@example.com");
+    expect(text).toContain("Here is the revised Q4 plan.");
   } finally {
     app.close();
   }
@@ -213,7 +289,12 @@ test("the builder plans a revenue number widget and waits for approval", async (
   }
 });
 
-async function harness(chat?: ModelAdapter["chat"]): Promise<{
+const running = async () => "running" as const;
+
+async function harness(
+  chat?: ModelAdapter["chat"],
+  probe: () => Promise<"running" | "stopped"> = async () => "stopped",
+): Promise<{
   app: DesktopApp;
   methods: ReturnType<DesktopApp["methods"]>;
   dir: string;
@@ -235,7 +316,7 @@ async function harness(chat?: ModelAdapter["chat"]): Promise<{
   const app = new DesktopApp({
     dataDir: dir,
     adapter,
-    probe: async () => "stopped",
+    probe,
     now: () => Date.parse("2026-11-11T12:00:00.000Z"),
   });
   await app.start();
