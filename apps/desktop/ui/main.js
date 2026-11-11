@@ -113,3 +113,13 @@ showWidgets().catch(() => {
 showOllama().catch(() => {
   ollamaNode.textContent = "Ollama is not running.";
 });
+
+const revenueNode = document.getElementById("revenue-status");
+window.__TAURI__.core
+  .invoke("revenue_status")
+  .then((line) => {
+    revenueNode.textContent = line;
+  })
+  .catch(() => {
+    revenueNode.textContent = "Revenue unavailable";
+  });
