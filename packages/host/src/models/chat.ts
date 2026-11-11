@@ -81,6 +81,7 @@ export class ChatSession {
       let toolOutput = "";
       if (call && tools && known) {
         handled = true;
+        assistant.text = "";
         toolOutput = await tools.runTool(call, controller.signal);
         if (
           controller.signal.aborted ||
