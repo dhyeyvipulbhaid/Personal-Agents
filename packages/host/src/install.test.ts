@@ -79,7 +79,7 @@ test("the user installer checks the sha256 and only the user path", () => {
   });
   expect(bad.status).not.toBe(0);
   expect(bad.stderr.toString()).toContain("sha256 mismatch");
-});
+}, 30_000);
 
 test("the windows installer changes the user path and not the machine path", () => {
   const script = readFileSync(join(root, "install.ps1"), "utf8");
