@@ -12,11 +12,15 @@ permissions:
 jobs:
   checks:
     name: Lint, types, and tests (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest]
+        include:
+          - os: windows-latest
+            runner: windows-latest
+          - os: macos-latest
+            runner: macos-15
     steps:
       - name: Check out
         uses: actions/checkout@v4
@@ -40,12 +44,16 @@ jobs:
 
   package:
     name: Package and install check (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest]
+        include:
+          - os: windows-latest
+            runner: windows-latest
+          - os: macos-latest
+            runner: macos-15
     steps:
       - name: Check out
         uses: actions/checkout@v4
@@ -117,12 +125,16 @@ jobs:
 
   e2e:
     name: End-to-end UI flows (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest]
+        include:
+          - os: windows-latest
+            runner: windows-latest
+          - os: macos-latest
+            runner: macos-15
     steps:
       - name: Check out
         uses: actions/checkout@v4
