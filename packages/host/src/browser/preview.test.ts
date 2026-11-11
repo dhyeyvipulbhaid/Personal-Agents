@@ -61,6 +61,37 @@ test("thumbnail capture asks for a small jpeg", () => {
   expect(THUMB_WIDTH).toBe(480);
 });
 
+test("a pending approval is shown before Chrome starts", async () => {
+  let frames = 0;
+  const preview = new BrowserPreview(
+    {
+      sessionOpen: () => false,
+      lastActionAt: () => 0,
+      currentStep: () => "navigate to www.wikipedia.org",
+      pageUrl: () => "",
+      site: () => "",
+      pendingApproval: () => ({
+        id: "req-1",
+        summary: "navigate to www.wikipedia.org",
+      }),
+      recentActions: () => [],
+      capture: async () => {
+        frames += 1;
+        return "frame";
+      },
+    },
+    () => {},
+    () => 1_000,
+    () => () => {},
+  );
+  const snap = preview.watch(true);
+  expect(snap.pendingApproval?.summary).toBe("navigate to www.wikipedia.org");
+  expect(snap.active).toBe(false);
+  expect(snap.streaming).toBe(false);
+  await preview.pump();
+  expect(frames).toBe(0);
+});
+
 test("a visible subscriber starts frames and hiding or idle stops them", async () => {
   let clock = 1_000_000;
   let session = true;
