@@ -1,6 +1,7 @@
 const digest = document.getElementById("digest");
 const followUps = document.getElementById("follow-ups");
 const messages = document.getElementById("messages");
+const status = document.getElementById("mail-status");
 
 function names(node, values, empty) {
   node.replaceChildren();
@@ -10,6 +11,19 @@ function names(node, values, empty) {
     item.textContent = value;
     node.append(item);
   }
+}
+
+function formatDate(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return date.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 function render(state) {
@@ -23,10 +37,28 @@ function render(state) {
     const subject = document.createElement("span");
     subject.textContent = message.subject;
     const date = document.createElement("time");
-    date.textContent = message.date;
-    const thread = document.createElement("span");
-    thread.textContent = message.thread;
-    item.append(from, subject, date, thread);
+    date.dateTime = message.date;
+    date.textContent = formatDate(message.date);
+    item.append(from, subject, date);
+    if (message.id) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "ghost";
+      button.textContent = "Draft reply";
+      button.addEventListener("click", () => {
+        button.disabled = true;
+        window.pa
+          .invoke("mail_draft", { id: message.id })
+          .then(() => {
+            status.textContent = `A reply to ${message.thread} is waiting on Approvals. Approve it to save the message in the local outbox.`;
+          })
+          .catch((error) => {
+            status.textContent = window.pa.explain(error, "Mail");
+            button.disabled = false;
+          });
+      });
+      item.append(button);
+    }
     messages.append(item);
   }
 }

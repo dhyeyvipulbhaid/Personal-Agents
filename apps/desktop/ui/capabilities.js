@@ -1,9 +1,31 @@
 const checks = document.getElementById("checks");
 const plugins = document.getElementById("plugins");
 
-function checkLine(check) {
-  const cause = check.cause ? ` (${check.cause})` : "";
-  return `${check.status}: ${check.name}${cause}`;
+function shorten(path) {
+  return path
+    .replace(/^\/Users\/[^/]+/, "~")
+    .replace(/^\/home\/[^/]+/, "~")
+    .replace(/^C:\\Users\\[^\\]+/i, "~");
+}
+
+function labelFor(check) {
+  const name = check.name ?? "";
+  if (name.startsWith("folder ")) {
+    return { title: "Folder", detail: shorten(name.slice("folder ".length)) };
+  }
+  if (name.startsWith("browser ")) {
+    return { title: name.slice("browser ".length), detail: check.cause || "" };
+  }
+  if (name.startsWith("model ")) {
+    return { title: "Model", detail: name.slice("model ".length) };
+  }
+  if (name === "remote debugging") {
+    return { title: "Remote debugging", detail: check.cause || "" };
+  }
+  if (name === "ollama") {
+    return { title: "Ollama", detail: check.cause || "" };
+  }
+  return { title: name, detail: check.cause || "" };
 }
 
 function advice(check) {
@@ -46,12 +68,30 @@ function render(report) {
   checks.replaceChildren();
   for (const check of list) {
     const item = document.createElement("li");
-    const status = document.createElement("p");
-    status.textContent = checkLine(check);
-    const help = document.createElement("p");
-    help.className = "muted";
-    help.textContent = advice(check);
-    item.append(status, help);
+    item.className = "check-row";
+    const chip = document.createElement("span");
+    const ready = check.status === "available";
+    chip.className = `chip ${ready ? "ready" : "blocked"}`;
+    chip.textContent = ready ? "Ready" : "Blocked";
+    const label = labelFor(check);
+    const text = document.createElement("div");
+    const title = document.createElement("p");
+    title.textContent = label.title;
+    text.append(title);
+    if (label.detail) {
+      const detail = document.createElement("p");
+      detail.className = "muted";
+      detail.textContent = label.detail;
+      text.append(detail);
+    }
+    const helpText = advice(check);
+    if (!ready && helpText) {
+      const help = document.createElement("p");
+      help.className = "muted";
+      help.textContent = helpText;
+      text.append(help);
+    }
+    item.append(chip, text);
     checks.append(item);
   }
 }

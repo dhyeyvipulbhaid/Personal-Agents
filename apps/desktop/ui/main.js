@@ -1,4 +1,3 @@
-const versionNode = document.getElementById("host-version");
 const widgetsRoot = document.getElementById("widgets");
 const layoutGrid = document.getElementById("layout-grid");
 const layoutList = document.getElementById("layout-list");
@@ -16,17 +15,26 @@ function themedHtml(html, theme) {
   return String(html).split("__PA_THEME__").join(safe);
 }
 
-function shortTime(value) {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return value;
+function ago(value) {
+  const then = Date.parse(value);
+  if (!Number.isFinite(then)) {
+    return "Updated";
   }
-  return date.toLocaleString(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+  const minutes = Math.max(0, Math.round((Date.now() - then) / 60000));
+  if (minutes < 1) {
+    return "Updated just now";
+  }
+  if (minutes === 1) {
+    return "Updated 1 min ago";
+  }
+  if (minutes < 60) {
+    return `Updated ${minutes} min ago`;
+  }
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) {
+    return `Updated ${hours} hr ago`;
+  }
+  return `Updated ${Math.round(hours / 24)} days ago`;
 }
 
 function card(title, health, updated) {
@@ -74,7 +82,10 @@ function widgetCard(widget) {
   frame.className = "widget-frame";
   frame.setAttribute("sandbox", "");
   frame.title = widget.title || "Widget";
-  frame.srcdoc = themedHtml(widget.html, window.pa.theme());
+  frame.srcdoc = window.pa.frameDocument(
+    themedHtml(widget.html, window.pa.theme()),
+    window.pa.theme(),
+  );
   article.append(frame);
   return article;
 }
@@ -102,15 +113,13 @@ function revenueCard() {
   const article = card(
     "Revenue",
     data.health === "alert" ? "warn" : "good",
-    data.lastRefresh ? `Updated ${shortTime(data.lastRefresh)}` : "",
+    data.lastRefresh ? ago(data.lastRefresh) : "",
   );
   const total = document.createElement("p");
   total.className = "total";
+  total.id = "revenue-status";
   total.textContent = String(data.total);
-  const line = document.createElement("p");
-  line.id = "revenue-status";
-  line.textContent = data.line || "";
-  article.append(total, line);
+  article.append(total);
   if (Array.isArray(data.alerts) && data.alerts.length > 0) {
     const alerts = document.createElement("p");
     alerts.textContent = `Alert: ${data.alerts.join(", ")} dropped by 10% or more.`;
@@ -246,12 +255,6 @@ densityCompact?.addEventListener("click", () => {
   applyLayout();
 });
 
-async function showHostVersion() {
-  const version = await window.pa.invoke("host_version");
-  versionNode.textContent = `Agent host ${version}`;
-  await window.pa.invoke("note_displayed_host_version", { version });
-}
-
 async function showWidgets() {
   const parsed = JSON.parse(await window.pa.invoke("widgets"));
   if (!Array.isArray(parsed)) {
@@ -313,10 +316,8 @@ async function showApprovals() {
 }
 
 window.pa.onTheme(renderDashboard);
+document.addEventListener("pa-font", renderDashboard);
 applyLayout();
-showHostVersion().catch((error) => {
-  versionNode.textContent = window.pa.explain(error, "Agent host");
-});
 showWidgets().catch((error) => {
   widgetPayload = [];
   widgetError = window.pa.explain(error, "Widgets");

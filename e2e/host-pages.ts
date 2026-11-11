@@ -62,7 +62,7 @@ try {
     .first()
     .waitFor();
   const capabilities = (await page.locator("body").textContent()) ?? "";
-  if (!/available|blocked/.test(capabilities)) {
+  if (!/Ready|Blocked/.test(capabilities)) {
     throw new Error(`capabilities had no probe result\n${capabilities}`);
   }
   await assertNoUnavailable(page, "capabilities");

@@ -13,10 +13,13 @@ test("the bundled page shows the app name and version", async () => {
   const html = await Bun.file(
     new URL("../ui/index.html", import.meta.url),
   ).text();
+  const shell = await Bun.file(
+    new URL("../ui/shell.js", import.meta.url),
+  ).text();
 
   expect(config.productName).toBe("Personal Agents");
   expect(html).toContain(config.productName);
-  expect(html).toContain(`Version ${config.version}`);
+  expect(shell).toContain(`Version ${config.version}`);
   expect(config.mainBinaryName).toBe("personal-agents");
   expect(config.build.frontendDist).toBe("../ui");
   expect(config.build.devUrl).toBeUndefined();
@@ -26,19 +29,19 @@ test("the window can ask for the host version", async () => {
   const html = await Bun.file(
     new URL("../ui/index.html", import.meta.url),
   ).text();
-  const script = await Bun.file(
-    new URL("../ui/main.js", import.meta.url),
+  const shell = await Bun.file(
+    new URL("../ui/shell.js", import.meta.url),
   ).text();
   const capabilities = (await Bun.file(
     new URL("../src-tauri/capabilities/default.json", import.meta.url),
   ).json()) as { permissions: string[] };
   const config = await readConfig();
 
-  expect(html).toContain('id="host-version"');
+  expect(shell).toContain('id="host-version"');
   expect(html).toContain('src="main.js"');
-  expect(script).toContain('invoke("host_version")');
-  expect(script).toContain("Agent host ");
-  expect(script).toContain('invoke("note_displayed_host_version"');
+  expect(shell).toContain('invoke("host_version")');
+  expect(shell).toContain("Agent host ");
+  expect(shell).toContain('invoke("note_displayed_host_version"');
   expect(config.app.withGlobalTauri).toBe(true);
   expect(config.bundle.externalBin).toEqual(["binaries/agent-host"]);
   expect(capabilities.permissions).toContain("allow-host-version");

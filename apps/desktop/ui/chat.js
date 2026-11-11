@@ -113,8 +113,13 @@ function renderMessages(messages) {
       continue;
     }
     const bubble = document.createElement("div");
-    bubble.className = `bubble ${message.role === "user" ? "user" : "assistant"}`;
-    bubble.textContent = message.text ?? "";
+    const role = message.role === "user" ? "user" : "assistant";
+    bubble.className = `bubble ${role}`;
+    if (role === "assistant") {
+      bubble.innerHTML = markdownToHtml(message.text ?? "");
+    } else {
+      bubble.textContent = message.text ?? "";
+    }
     thread.append(bubble);
   }
   thread.scrollTop = thread.scrollHeight;
