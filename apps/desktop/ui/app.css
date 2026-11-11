@@ -416,6 +416,10 @@ button.danger {
   color: var(--warn);
 }
 
+.notice.ok {
+  color: var(--good);
+}
+
 .info {
   margin: 8px 0 0;
   color: var(--ink);
@@ -600,6 +604,11 @@ button.danger {
 
 .inline-approval {
   max-width: 560px;
+}
+
+.approval-status {
+  margin: 4px 0;
+  font-size: 13px;
 }
 
 .steps {

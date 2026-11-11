@@ -22,6 +22,7 @@ let sending = false;
 let round = 0;
 let paint = 0;
 let optimisticText = "";
+let savedTimer = 0;
 const lockedCards = new Map();
 
 function normalize(parsed) {
@@ -85,7 +86,7 @@ function renderMessages(messages) {
     thread.append(empty);
     return;
   }
-  for (const message of messages) {
+  for (const message of displayOrder(messages)) {
     if (message.role === "approval") {
       const card = document.createElement("article");
       card.className = "card inline-approval";
@@ -97,7 +98,13 @@ function renderMessages(messages) {
       card.append(text);
       if (settled(message.text)) {
         lockedCards.delete(message.approvalId);
-      } else if (lockedCards.has(message.approvalId)) {
+        const line = document.createElement("p");
+        line.className = "muted approval-status";
+        line.textContent = settledLine(message.text);
+        thread.append(line);
+        continue;
+      }
+      if (lockedCards.has(message.approvalId)) {
         card.dataset.locked = "1";
         const status = document.createElement("p");
         status.className = "muted";
@@ -203,6 +210,77 @@ function renderSessions(state) {
     });
     sessions.append(button);
   }
+}
+
+function displayOrder(messages) {
+  const ordered = [];
+  let index = 0;
+  while (index < messages.length) {
+    const message = messages[index];
+    if (message.role !== "user") {
+      ordered.push(message);
+      index += 1;
+      continue;
+    }
+    const rest = [];
+    index += 1;
+    while (index < messages.length && messages[index].role !== "user") {
+      rest.push(messages[index]);
+      index += 1;
+    }
+    ordered.push(
+      message,
+      ...rest.filter((item) => item.role === "approval"),
+      ...rest.filter((item) => item.role !== "approval"),
+    );
+  }
+  return ordered;
+}
+
+function settledLine(text) {
+  const raw = String(text ?? "");
+  const denied = raw.includes("(denied)");
+  const cancelled = raw.includes("(cancelled)");
+  const body = raw.replace(/\s*\((approved|denied|cancelled)\)\s*/g, "").trim();
+  const click = /click "([^"]+)"/i.exec(body);
+  if (click) {
+    if (denied) {
+      return `Denied: ${click[1]}`;
+    }
+    if (cancelled) {
+      return "Cancelled";
+    }
+    return `Clicked "${click[1]}"`;
+  }
+  const typed = /type "[^"]*" into "([^"]+)"/i.exec(body);
+  if (typed || /\btype\b/i.test(body)) {
+    const field = typed?.[1] ?? "";
+    if (denied) {
+      return field.length > 0 ? `Denied: ${field}` : "Denied";
+    }
+    if (cancelled) {
+      return "Cancelled";
+    }
+    return field.length > 0 ? `Typed into "${field}"` : "Typed into a field";
+  }
+  const open = /(?:visit|navigate to|open)\s+(\S+)/i.exec(body);
+  if (open?.[1]) {
+    const host = open[1].replace(/[.,]+$/, "");
+    if (denied) {
+      return `Denied: ${host}`;
+    }
+    if (cancelled) {
+      return "Cancelled";
+    }
+    return `Opened ${host}`;
+  }
+  if (denied) {
+    return "Denied";
+  }
+  if (cancelled) {
+    return "Cancelled";
+  }
+  return body.length > 0 ? body : "Approved";
 }
 
 function settled(text) {
@@ -339,8 +417,25 @@ async function loadModels() {
       : window.pa.explain("Ollama is not running", "Models"));
 }
 
+function showModelNote(text, ok) {
+  window.clearTimeout(savedTimer);
+  modelError.className = ok ? "notice ok" : "notice";
+  modelError.textContent = text;
+  if (!ok) {
+    return;
+  }
+  savedTimer = window.setTimeout(() => {
+    if (modelError.textContent === text) {
+      modelError.textContent = "";
+      modelError.className = "notice";
+    }
+  }, 2000);
+}
+
 document.getElementById("models").addEventListener("submit", (event) => {
   event.preventDefault();
+  window.clearTimeout(savedTimer);
+  modelError.className = "notice";
   modelError.textContent = "";
   window.pa
     .invoke("set_models", {
@@ -349,13 +444,16 @@ document.getElementById("models").addEventListener("submit", (event) => {
       builder: selects.builder.value,
     })
     .then(() => {
-      modelError.textContent = "Saved";
+      showModelNote("Saved", true);
     })
     .catch((error) => {
       const message = error instanceof Error ? error.message : String(error);
-      modelError.textContent = /unavailable/i.test(message)
-        ? window.pa.explain(error, "Models")
-        : message;
+      showModelNote(
+        /unavailable/i.test(message)
+          ? window.pa.explain(error, "Models")
+          : message,
+        false,
+      );
     });
 });
 

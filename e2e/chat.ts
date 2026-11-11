@@ -121,6 +121,10 @@ try {
   await page.locator("#chat-model").selectOption("llama-next");
   await page.getByRole("button", { name: "Save models" }).click();
   await page.getByText("Saved").waitFor();
+  const savedClass = await page.locator("#model-error").getAttribute("class");
+  if (!savedClass?.split(/\s+/).includes("ok")) {
+    throw new Error(`Saved used class ${savedClass}`);
+  }
   await page.locator("#draft").fill("again");
   await page.getByRole("button", { name: "Send" }).click();
   await page
@@ -139,7 +143,16 @@ try {
   await page.locator("#draft").fill("approve this");
   await page.getByRole("button", { name: "Send" }).click();
   await page.getByRole("button", { name: "Approve" }).click();
-  await page.getByText("(approved)").waitFor();
+  const status = page.locator(".approval-status", {
+    hasText: "delete the row",
+  });
+  await status.waitFor();
+  const answer = page.locator(".bubble.assistant").last();
+  const statusBox = await status.boundingBox();
+  const answerBox = await answer.boundingBox();
+  if (!statusBox || !answerBox || statusBox.y >= answerBox.y) {
+    throw new Error("the approval status rendered below the answer");
+  }
   await page.goto(
     pathToFileURL(join(import.meta.dir, "../apps/desktop/ui/approvals.html"))
       .href,
