@@ -6,6 +6,10 @@
     "core:default",
     "allow-host-version",
     "allow-note-displayed-host-version",
-    "allow-widgets"
+    "allow-widgets",
+    "allow-ollama-status",
+    "allow-audit-log",
+    "allow-approvals",
+    "allow-approval-act"
   ]
 }

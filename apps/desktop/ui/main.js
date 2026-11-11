@@ -87,10 +87,29 @@ async function showWidgets() {
   renderWidgets();
 }
 
+const ollamaNode = document.getElementById("ollama-status");
+
+async function showOllama() {
+  const status = await window.__TAURI__.core.invoke("ollama_status");
+  if (status === "running") {
+    ollamaNode.textContent = "Ollama is running";
+    return;
+  }
+  ollamaNode.textContent = "";
+  ollamaNode.append("Ollama is not running. ");
+  const link = document.createElement("a");
+  link.href = "https://ollama.com/download";
+  link.textContent = "Install Ollama";
+  ollamaNode.append(link);
+}
+
 applyShellTheme();
 showHostVersion().catch(() => {
   versionNode.textContent = "Agent host unavailable";
 });
 showWidgets().catch(() => {
   widgetsRoot.textContent = "Widgets unavailable";
+});
+showOllama().catch(() => {
+  ollamaNode.textContent = "Ollama is not running.";
 });
