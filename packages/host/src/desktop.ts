@@ -440,10 +440,14 @@ export class DesktopApp {
         });
       }
     } catch (error) {
-      const last = session.chat.messages.at(-1);
-      if (last?.role === "assistant") {
-        last.text = this.failText(error, this.settings.get("chat"));
+      const detail = this.failText(error, this.settings.get("chat"));
+      const assistant = [...session.chat.messages]
+        .reverse()
+        .find((item) => item.role === "assistant");
+      if (assistant) {
+        assistant.text = detail;
       }
+      console.error(`chat-send failed: ${detail}`);
     } finally {
       session.streaming = false;
     }
