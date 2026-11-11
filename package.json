@@ -1,0 +1,19 @@
+{
+  "name": "personal-agents",
+  "private": true,
+  "packageManager": "bun@1.4.4",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "lint": "biome check .",
+    "typecheck": "tsc -p apps/desktop --noEmit && tsc -p packages/host --noEmit",
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.6.6",
+    "@types/bun": "1.4.4",
+    "typescript": "7.0.2"
+  }
+}
