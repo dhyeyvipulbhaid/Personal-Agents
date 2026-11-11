@@ -36,6 +36,15 @@ test("the first visit to a site waits and the next visit to that site does not",
   expect(approvals.pending().length).toBe(before);
 });
 
+test("a denied visit does not open the page", async () => {
+  const approvals = new Approvals(() => {});
+  const session = new BrowserSession(approvals);
+  const visit = session.visit("https://example.test/secret");
+  approvals.deny(approvals.pending()[0]?.id ?? "");
+  await visit;
+  expect(session.liveView()).toEqual([]);
+});
+
 test("blocked remote debugging drops to rung 5 and explains why", () => {
   const checks = probeCapabilities({
     folders: [],

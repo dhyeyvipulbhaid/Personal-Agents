@@ -27,3 +27,17 @@ test("an open machine shows folders, the browser, ollama, and models as availabl
   });
   expect(checks.every((check) => check.status === "available")).toBe(true);
 });
+
+test("the ollama row names the models it found", () => {
+  const models = ["qwen3:4b", "qwen3:8b", "qwen2.5-coder:7b"];
+  const checks = probeCapabilities({
+    folders: [],
+    browsers: [],
+    policies: [],
+    ollamaPortOpen: true,
+    models,
+  });
+  const ollama = checks.find((check) => check.name === "ollama");
+  expect(ollama?.status).toBe("available");
+  expect(ollama?.cause).toBe(models.join(", "));
+});

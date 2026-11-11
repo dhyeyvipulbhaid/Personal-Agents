@@ -32,16 +32,20 @@ export class BrowserSession {
     }
     const host = new URL(url).host;
     if (!this.seenHosts.has(host)) {
-      await new Promise<void>((resolve) => {
+      const decision = await new Promise<{ decision: string }>((resolve) => {
         void this.approvals.runTask("browser", async (task) => {
-          await task.request({
-            summary: `visit ${host}`,
-            draft: url,
-            capability: "browser.visit",
-          });
-          resolve();
+          resolve(
+            await task.request({
+              summary: `visit ${host}`,
+              draft: url,
+              capability: "browser.visit",
+            }),
+          );
         });
       });
+      if (decision.decision !== "approved") {
+        return;
+      }
       this.seenHosts.add(host);
     }
     this.steps.push(`open ${url}`);
