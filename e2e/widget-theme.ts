@@ -35,6 +35,9 @@ try {
             if (command === "ollama_status") {
               return Promise.resolve("running");
             }
+            if (command === "revenue_status") {
+              return Promise.resolve("Revenue unavailable");
+            }
             return Promise.reject(new Error(`unexpected command ${command}`));
           },
         },
