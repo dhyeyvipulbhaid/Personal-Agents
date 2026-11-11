@@ -1,5 +1,5 @@
 /** Effects a plugin may register. Each one is removed on unload. */
-export const EFFECT_NAMES = ["tile", "schedule"] as const;
+export const EFFECT_NAMES = ["tile", "schedule", "connector"] as const;
 
 export type EffectName = (typeof EFFECT_NAMES)[number];
 

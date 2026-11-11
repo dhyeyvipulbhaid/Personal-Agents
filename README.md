@@ -2,7 +2,7 @@
 
 Personal Agents is a workspace for an employee on a work laptop. It installs without admin rights and runs only with that person's permissions. Chat, a widget page, a natural-language widget builder, memory, a browser agent, and an approvals list live in one app, and each part is a plugin. Version 1 is a local demo: models run in Ollama on the machine, and data comes from local files.
 
-**Status.** The window loads the hello plugin, checks plugin grants, and lists decisions on the Activity page. Approvals can pause one task while another keeps running. `install.sh` and `install.ps1` install for the current user. The page says when Ollama is not running.
+**Status.** The window loads plugins, checks grants, and records decisions. Chat uses the model chosen for that role. A model without tools cannot be the agent model. Alt+C opens chat from any page.
 
 ## Repo layout
 
@@ -52,7 +52,7 @@ On Windows the build writes an NSIS installer at `apps/desktop/src-tauri/target/
 
 On macOS the build writes `Personal Agents.app` at `apps/desktop/src-tauri/target/release/bundle/macos/`. Zip that app to move it, unzip it into `~/Applications`, and open it. The app is not signed. macOS may ask you to confirm an unknown developer. That confirmation is not an administrator password. Remove the app by moving it from `~/Applications` to the Trash.
 
-Hand checklists: `docs/manual-tests/m1-install.md`, `m2-backend.md`, `m3-plugins.md`, `m4-install.md`, `g1-locked-down.md`, `m5-activity.md`, and `m6-approvals.md`.
+Hand checklists live in `docs/manual-tests/`. They cover install, the host, plugins, the user installer, the locked-down gate, activity, approvals, models, and chat.
 
 ## Roadmap at a glance
 
