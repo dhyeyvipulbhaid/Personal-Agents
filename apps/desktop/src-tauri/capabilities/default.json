@@ -1,0 +1,6 @@
+{
+  "identifier": "default",
+  "description": "The main window shows the bundled page.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

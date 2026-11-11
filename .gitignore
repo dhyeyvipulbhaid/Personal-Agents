@@ -1,6 +1,8 @@
 node_modules/
 dist/
 target/
+apps/desktop/src-tauri/gen/
+personal-agents-macos.zip
 *.log
 .DS_Store
 Thumbs.db

@@ -3,8 +3,9 @@
   "productName": "Personal Agents",
   "version": "0.0.0",
   "identifier": "com.personalagents.desktop",
+  "mainBinaryName": "personal-agents",
   "build": {
-    "frontendDist": "../dist"
+    "frontendDist": "../ui"
   },
   "app": {
     "security": {
@@ -12,6 +13,29 @@
     }
   },
   "bundle": {
-    "active": false
+    "active": true,
+    "publisher": "Personal Agents",
+    "targets": ["nsis", "app"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "webviewInstallMode": {
+        "type": "skip"
+      },
+      "nsis": {
+        "installMode": "currentUser",
+        "startMenuFolder": "Personal Agents",
+        "installerHooks": "./windows/hooks.nsh"
+      }
+    },
+    "macOS": {
+      "signingIdentity": null,
+      "hardenedRuntime": false
+    }
   }
 }
