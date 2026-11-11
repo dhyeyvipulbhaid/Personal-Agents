@@ -151,22 +151,55 @@ function Assert-NoListeningPorts([int[]]$ProcessIds, [string]$When) {
   if ($tcp.Count -eq 0) {
     Write-Host "TCP listen (${When}): none"
   } else {
-    $ports = ($tcp | ForEach-Object { "$($_.OwningProcess):$($_.LocalPort)" }) -join ", "
-    throw "listening TCP (${When}): $ports"
+    throw "listening TCP (${When}): $(Format-OwnedPorts $tcp)"
   }
   if ($udp.Count -eq 0) {
     Write-Host "UDP listen (${When}): none"
   } else {
-    $ports = ($udp | ForEach-Object { "$($_.OwningProcess):$($_.LocalPort)" }) -join ", "
-    throw "listening UDP (${When}): $ports"
+    throw "listening UDP (${When}): $(Format-OwnedPorts $udp)"
   }
 }
 
+function Format-OwnedPorts($Rows) {
+  $parts = @()
+  foreach ($row in @($Rows)) {
+    $procId = [int]$row.OwningProcess
+    $name = $null
+    try {
+      $found = Get-CimInstance Win32_Process -Filter "ProcessId=$procId" -ErrorAction SilentlyContinue
+      if ($found) {
+        $name = [string]$found.Name
+      }
+    } catch {
+      $name = $null
+    }
+    if ($name) {
+      $parts += "$name ${procId}:$($row.LocalPort)"
+    } else {
+      $parts += "${procId}:$($row.LocalPort)"
+    }
+  }
+  return ($parts -join ", ")
+}
+
 function Get-AppProcessIds([int]$AppId, [int]$HostProcessId) {
-  $related = Get-CimInstance Win32_Process | Where-Object {
-    $_.ProcessId -eq $AppId -or
-    $_.ParentProcessId -eq $AppId -or
-    $_.ProcessId -eq $HostProcessId -or
+  # ParentProcessId is left behind after a parent exits, and Windows reuses
+  # PIDs. A process is a child of this app only if it was created at or after
+  # the app; an older process is a stale parent id, not a descendant.
+  $all = @(Get-CimInstance Win32_Process)
+  $appProc = $all | Where-Object { [int]$_.ProcessId -eq $AppId } | Select-Object -First 1
+  if (-not $appProc) {
+    throw "app process $AppId disappeared"
+  }
+  if (-not $appProc.CreationDate) {
+    throw "app process $AppId has no CreationDate"
+  }
+  $appCreated = [datetime]$appProc.CreationDate
+  $related = $all | Where-Object {
+    $isChild = [int]$_.ParentProcessId -eq $AppId -and $_.CreationDate -and ([datetime]$_.CreationDate -ge $appCreated)
+    [int]$_.ProcessId -eq $AppId -or
+    $isChild -or
+    [int]$_.ProcessId -eq $HostProcessId -or
     ($_.CommandLine -and $_.CommandLine -like "*com.personalagents.desktop*")
   }
   return @($related | ForEach-Object { [int]$_.ProcessId } | Select-Object -Unique)
