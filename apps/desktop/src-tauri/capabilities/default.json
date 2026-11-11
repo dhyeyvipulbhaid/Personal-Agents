@@ -22,6 +22,7 @@
     "allow-chat-new",
     "allow-chat-open",
     "allow-mail-state",
+    "allow-mail-draft",
     "allow-memory-list",
     "allow-memory-remember",
     "allow-memory-delete",

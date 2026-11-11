@@ -1,5 +1,11 @@
 import type { Approvals } from "../approvals/approvals.ts";
-import type { ChatResult, ModelAdapter, ModelSettings } from "./adapter.ts";
+import type {
+  ChatResult,
+  ModelAdapter,
+  ModelSettings,
+  ToolCall,
+  ToolDefinition,
+} from "./adapter.ts";
 
 export type TranscriptEntry = {
   role: "user" | "assistant" | "approval" | "memory";
@@ -25,9 +31,17 @@ export class ChatSession {
     this.abort?.abort();
   }
 
-  async send(text: string, context?: string): Promise<ChatResult> {
+  async send(
+    text: string,
+    context?: string,
+    tools?: {
+      model?: string;
+      definitions: ToolDefinition[];
+      runTool: (call: ToolCall) => Promise<string>;
+    },
+  ): Promise<ChatResult> {
     this.messages.push({ role: "user", text });
-    const model = this.settings.get("chat");
+    const model = tools?.model || this.settings.get("chat");
     this.modelsUsed.push(model);
     const history = this.turns();
     const assistant: TranscriptEntry = { role: "assistant", text: "" };
@@ -36,24 +50,44 @@ export class ChatSession {
     let sawToken = false;
     const controller = new AbortController();
     this.abort = controller;
+    const messages = [
+      ...(context ? [{ role: "system" as const, content: context }] : []),
+      ...history,
+    ];
+    const onDelta = (delta: { token: string }) => {
+      if (!sawToken) {
+        this.firstTokenMs = this.clock() - started;
+        sawToken = true;
+      }
+      assistant.text += delta.token;
+    };
     try {
-      const result = await this.adapter.chat(
+      let result = await this.adapter.chat(
         {
           model,
-          messages: [
-            ...(context ? [{ role: "system" as const, content: context }] : []),
-            ...history,
-          ],
+          messages,
+          tools: tools?.definitions,
         },
-        (delta) => {
-          if (!sawToken) {
-            this.firstTokenMs = this.clock() - started;
-            sawToken = true;
-          }
-          assistant.text += delta.token;
-        },
+        onDelta,
         controller.signal,
       );
+      const call = result.toolCall;
+      const known =
+        call !== undefined &&
+        tools?.definitions.some((item) => item.function.name === call.name) ===
+          true;
+      if (call && tools && known) {
+        const output = await tools.runTool(call);
+        messages.push({
+          role: "user",
+          content: `Tool result for ${call.name}:\n${output}`,
+        });
+        result = await this.adapter.chat(
+          { model, messages, tools: tools.definitions },
+          onDelta,
+          controller.signal,
+        );
+      }
       if (result.text) {
         assistant.text = result.text;
       }

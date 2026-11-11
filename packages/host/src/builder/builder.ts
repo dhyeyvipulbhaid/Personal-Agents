@@ -35,6 +35,17 @@ export function templateSpec(name: "kpi" | "table" | "alert"): WidgetSpec {
   return { ...TEMPLATES[name] };
 }
 
+/** The name a person sees. The spec still stores number, table, or alert. */
+export function widgetTitle(spec: WidgetSpec): string {
+  if (spec.display === "table") {
+    return "Revenue table";
+  }
+  if (spec.display === "alert") {
+    return "Revenue alert";
+  }
+  return "Total revenue";
+}
+
 export function staticCheck(spec: WidgetSpec): void {
   if (spec.source !== "revenue") {
     throw new Error("unsupported data source");
@@ -71,17 +82,19 @@ export class WidgetBuilder {
   requestInstall(spec: WidgetSpec, rows: RevenueRow[], id: string): string {
     staticCheck(spec);
     const html = previewWidget(spec, rows);
-    const model = this.settings.get("builder");
+    if (this.settings.get("builder").trim().length === 0) {
+      throw new Error("Choose a builder model before installing a widget.");
+    }
     const task = this.approvals.runTask("builder", async (ctx) => {
       const result = await ctx.request({
-        summary: `install ${spec.display} with ${model}`,
+        summary: `install '${widgetTitle(spec)}' widget`,
         draft: html,
         capability: "widget.install",
       });
       if (result.decision !== "approved") {
         return;
       }
-      await this.kernel.load(pluginSource(id, spec.display, result.draft));
+      await this.kernel.load(pluginSource(id, widgetTitle(spec), result.draft));
     });
     const pending = this.approvals.pending().at(-1);
     if (!pending) {

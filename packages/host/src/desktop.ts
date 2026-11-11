@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { type ActivityEntry, Approvals } from "./approvals/approvals.ts";
 import { decide } from "./broker/broker.ts";
 import {
@@ -17,13 +18,17 @@ import {
   loadMailbox,
   openMailState,
   recentThreads,
+  writeReply,
 } from "./mail/mail.ts";
+import { MAIL_USER } from "./mail/sample.ts";
 import { MemoryStore } from "./memory/memory.ts";
 import {
   type ModelAdapter,
   type ModelCapabilities,
   ModelSettings,
   type RoleName,
+  type ToolCall,
+  type ToolDefinition,
 } from "./models/adapter.ts";
 import { ChatSession } from "./models/chat.ts";
 import { OLLAMA_PLUGIN_SOURCE, OllamaConnector } from "./models/ollama.ts";
@@ -140,6 +145,7 @@ export class DesktopApp {
   private widgetCount = 0;
   private plan: { spec: WidgetSpec; preview: string } | null = null;
   private notice = "";
+  private readonly mailTasks = new Map<string, Promise<void>>();
 
   constructor(options: DesktopOptions) {
     this.adapter =
@@ -211,6 +217,8 @@ export class DesktopApp {
         return JSON.stringify(this.view(session));
       },
       mail_state: () => JSON.stringify(this.mailbox()),
+      mail_draft: async (params) =>
+        JSON.stringify(await this.draftReply(params)),
       memory_list: () => JSON.stringify(this.memory.view()),
       memory_remember: (params) => {
         const text = stringField(params, "text").trim();
@@ -260,6 +268,7 @@ export class DesktopApp {
           followUps: followUps(messages, db),
           digest: recentThreads(messages),
           messages: messages.map((message) => ({
+            id: message.id,
             from: message.from,
             subject: message.subject,
             date: message.date,
@@ -402,15 +411,29 @@ export class DesktopApp {
       this.memory.remember(session.id, text.trim());
     }
     const recalled = text.trim().endsWith("?") ? this.memory.recall(text) : [];
-    const context =
+    const kind = localQuestion(text);
+    const remembered =
       recalled.length > 0
         ? recalled
             .map((fact) => `${fact.text} (source ${fact.source})`)
             .join("\n")
-        : undefined;
+        : "";
+    const context = [toolPrompt(kind), remembered]
+      .filter((part) => part.length > 0)
+      .join("\n");
     session.streaming = true;
     try {
-      await session.chat.send(text, context);
+      await session.chat.send(
+        text,
+        context.length > 0 ? context : undefined,
+        kind
+          ? {
+              model: this.settings.get("agent"),
+              definitions: LOCAL_TOOLS,
+              runTool: (call) => this.runLocalTool(call),
+            }
+          : undefined,
+      );
       for (const fact of recalled) {
         session.chat.messages.push({
           role: "memory",
@@ -425,7 +448,114 @@ export class DesktopApp {
     } finally {
       session.streaming = false;
     }
+    if (kind === "revenue") {
+      this.groundRevenue(session);
+    }
     return JSON.stringify(this.view(session));
+  }
+
+  private async draftReply(params: unknown) {
+    const messages = loadMailbox(this.paths.mailDir);
+    const id = stringField(params, "id");
+    const message = messages.find((item) => item.id === id);
+    if (!message) {
+      throw new Error(
+        "That message is not in the local mailbox. Refresh Mail and try the draft again.",
+      );
+    }
+    let draft = `Thanks for the note about ${message.thread}.`;
+    try {
+      if ((await this.probe()) === "running") {
+        const result = await this.adapter.chat(
+          {
+            model: this.settings.get("chat"),
+            messages: [
+              {
+                role: "user",
+                content: `Write a short reply from ${MAIL_USER}.\nFrom: ${message.from}\nSubject: ${message.subject}\n\n${message.body}`,
+              },
+            ],
+          },
+          () => {},
+        );
+        if (result.text.trim().length > 0) {
+          draft = result.text.trim();
+        }
+      }
+    } catch {
+      // The local sentence is enough for the approval draft.
+    }
+    const subject = message.subject.startsWith("Re:")
+      ? message.subject
+      : `Re: ${message.subject}`;
+    const task = this.approvals.runTask("mail", async (ctx) => {
+      const result = await ctx.request({
+        summary: `Reply to ${message.thread}`,
+        draft,
+        capability: "mail.send",
+        effects: ["sends"],
+      });
+      if (result.decision !== "approved") {
+        return;
+      }
+      writeReply({
+        outbox: join(this.paths.root, "outbox"),
+        originalId: message.id,
+        to: message.from,
+        subject,
+        body: result.draft,
+      });
+    });
+    const approvalId = this.approvals.pending().at(-1)?.id ?? "";
+    if (approvalId.length > 0) {
+      this.mailTasks.set(approvalId, task);
+    }
+    return { approvalId, draft, thread: message.thread };
+  }
+
+  private async runLocalTool(call: ToolCall): Promise<string> {
+    if (call.name === "revenue.read") {
+      const view = this.revenue();
+      return JSON.stringify({ total: view.total, rows: view.rows });
+    }
+    if (call.name === "mail.summary") {
+      const mail = this.mailbox();
+      return JSON.stringify({
+        count: mail.count,
+        digest: mail.digest,
+        followUps: mail.followUps,
+      });
+    }
+    if (call.name === "memory.recall") {
+      let query = "";
+      try {
+        const parsed = JSON.parse(call.arguments) as { query?: string };
+        query = typeof parsed.query === "string" ? parsed.query : "";
+      } catch {
+        query = call.arguments;
+      }
+      const facts =
+        query.length > 0 ? this.memory.recall(query) : this.memory.view();
+      return JSON.stringify(facts);
+    }
+    throw new Error(`Unknown tool ${call.name}`);
+  }
+
+  private groundRevenue(session: Session): void {
+    const view = this.revenue();
+    const last = [...session.chat.messages]
+      .reverse()
+      .find((item) => item.role === "assistant");
+    if (!last) {
+      return;
+    }
+    const rows = view.rows
+      .map((row) => `${row.vertical} ${row.amount}`)
+      .join(", ");
+    const grounded = `The total in revenue.csv is ${view.total} (${rows}).`;
+    if (deniesAccess(last.text) || !last.text.includes(String(view.total))) {
+      last.text = grounded;
+    }
   }
 
   private planWidget(params: unknown) {
@@ -526,6 +656,70 @@ export class DesktopApp {
     }
     return text;
   }
+}
+
+const LOCAL_TOOLS: ToolDefinition[] = [
+  {
+    type: "function",
+    function: {
+      name: "revenue.read",
+      description:
+        "Read the local revenue.csv file and return its rows and total.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "mail.summary",
+      description: "Read the local mailbox digest and follow-ups.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "memory.recall",
+      description: "Recall facts saved on this machine.",
+      parameters: {
+        type: "object",
+        properties: { query: { type: "string" } },
+      },
+    },
+  },
+];
+
+function localQuestion(text: string): "revenue" | "mail" | "memory" | null {
+  const question = text.trim().toLowerCase();
+  const asking =
+    question.endsWith("?") ||
+    /^(what|how|show|list|which|where)\b/.test(question);
+  if (!asking) {
+    return null;
+  }
+  if (/revenue\.csv|\brevenue\b/.test(question)) {
+    return "revenue";
+  }
+  if (/\b(mail|inbox|digest|follow-ups?)\b/.test(question)) {
+    return "mail";
+  }
+  if (/\b(memory|remembered|saved facts?)\b/.test(question)) {
+    return "memory";
+  }
+  return null;
+}
+
+function toolPrompt(kind: "revenue" | "mail" | "memory" | null): string {
+  if (!kind) {
+    return "";
+  }
+  return "You can read this machine's files with tools. Call revenue.read for revenue.csv, mail.summary for the mailbox, and memory.recall for saved facts. Do not say you lack file access.";
+}
+
+function deniesAccess(text: string): boolean {
+  return /cannot|can't|do not have|don't have|no access|unable to (read|access)|no file/i.test(
+    text,
+  );
 }
 
 function steps(install: "pending" | "waiting") {
