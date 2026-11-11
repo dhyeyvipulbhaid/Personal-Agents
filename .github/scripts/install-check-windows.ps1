@@ -141,7 +141,12 @@ function Assert-NoListeningPorts([int[]]$ProcessIds, [string]$When) {
   $udp = @()
   foreach ($procId in $ProcessIds) {
     $tcp += @(Get-ListenTcp $procId)
-    $udp += @(Get-ListenUdp $procId)
+    foreach ($row in @(Get-ListenUdp $procId)) {
+      # Windows uses 49152-65535 for client sockets. A listener uses a fixed port.
+      if ([int]$row.LocalPort -lt 49152) {
+        $udp += $row
+      }
+    }
   }
   if ($tcp.Count -eq 0) {
     Write-Host "TCP listen (${When}): none"
