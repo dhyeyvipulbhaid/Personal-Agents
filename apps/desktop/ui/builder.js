@@ -21,6 +21,7 @@ function paintSteps(items) {
 
 async function plan(request) {
   current = request;
+  status.className = "info";
   status.textContent = "";
   const parsed = JSON.parse(await window.pa.invoke("builder_plan", request));
   paintSteps(parsed.steps || []);
@@ -42,6 +43,7 @@ document.querySelectorAll("[data-template]").forEach((button) => {
           : "show total revenue as a big number";
     prompt.value = text;
     plan({ template, prompt: text }).catch((error) => {
+      status.className = "notice";
       status.textContent = window.pa.explain(error, "Builder");
     });
   });
@@ -50,6 +52,7 @@ document.querySelectorAll("[data-template]").forEach((button) => {
 document.getElementById("builder-form").addEventListener("submit", (event) => {
   event.preventDefault();
   plan({ prompt: prompt.value }).catch((error) => {
+    status.className = "notice";
     status.textContent = window.pa.explain(error, "Builder");
   });
 });
@@ -60,10 +63,15 @@ document.getElementById("builder-install").addEventListener("click", () => {
     .then((raw) => {
       const parsed = JSON.parse(raw);
       paintSteps(parsed.steps || []);
-      status.textContent =
-        "Review finished. The install is waiting on Approvals. Open Approvals to allow it.";
+      status.className = "info";
+      status.replaceChildren("Review finished. The install is waiting on ");
+      const link = document.createElement("a");
+      link.href = "approvals.html";
+      link.textContent = "Approvals";
+      status.append(link, ".");
     })
     .catch((error) => {
+      status.className = "notice";
       status.textContent = window.pa.explain(error, "Builder");
     });
 });
