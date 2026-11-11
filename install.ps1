@@ -1,7 +1,7 @@
 # Unsigned user installer. It downloads or copies one bundle, checks SHA-256,
 # unpacks under the user profile, and changes only the user Path.
 param(
-  [string]$File,
+  [string]$Bundle,
   [string]$Url,
   [string]$Sha
 )
@@ -19,10 +19,10 @@ $dest = Join-Path $work "bundle.bin"
 
 if ($Url) {
   Invoke-WebRequest -Uri $Url -OutFile $dest
-} elseif ($File) {
-  Copy-Item $File $dest -Force
+} elseif ($Bundle) {
+  Copy-Item $Bundle $dest -Force
 } else {
-  throw "pass -Url or -File"
+  throw "pass -Url or -Bundle"
 }
 
 $actual = (Get-FileHash -Algorithm SHA256 -Path $dest).Hash.ToLowerInvariant()
