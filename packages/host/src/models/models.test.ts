@@ -67,6 +67,44 @@ test("the ollama connector streams tokens and reads a tool call", async () => {
   });
 });
 
+test("aborting the signal cancels a stalled ollama stream", async () => {
+  let sent = false;
+  const connector = new OllamaConnector(async () => {
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      async pull(controller) {
+        if (!sent) {
+          sent = true;
+          controller.enqueue(
+            encoder.encode(
+              `${JSON.stringify({ message: { content: "Hi" } })}\n`,
+            ),
+          );
+          return;
+        }
+        await new Promise(() => {});
+      },
+    });
+    return new Response(stream);
+  });
+  const controller = new AbortController();
+  const pending = connector.chat(
+    { model: "qwen3:8b", messages: [{ role: "user", content: "hi" }] },
+    () => {},
+    controller.signal,
+  );
+  await Bun.sleep(20);
+  controller.abort();
+  const outcome = await Promise.race([
+    pending.then(
+      () => "finished",
+      () => "aborted",
+    ),
+    Bun.sleep(400).then(() => "hung"),
+  ]);
+  expect(outcome).toBe("aborted");
+});
+
 test("the ollama connector returns structured output", async () => {
   const connector = new OllamaConnector(async (_url, init) => {
     const body = JSON.parse(String(init?.body)) as {

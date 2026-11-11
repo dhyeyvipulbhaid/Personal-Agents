@@ -19,6 +19,7 @@ const selects = {
 
 let activeId = "";
 let sending = false;
+let round = 0;
 
 function normalize(parsed) {
   if (Array.isArray(parsed)) {
@@ -88,23 +89,11 @@ function renderMessages(messages) {
       const text = document.createElement("p");
       text.textContent = message.text;
       card.append(text);
-      if (
-        message.approvalId &&
-        !String(message.text).includes("(approved)") &&
-        !String(message.text).includes("(denied)")
-      ) {
-        const button = document.createElement("button");
-        button.type = "button";
-        button.textContent = "Approve";
-        button.addEventListener("click", () => {
-          window.pa
-            .invoke("chat_approve", { id: message.approvalId })
-            .then(refresh)
-            .catch((error) => {
-              text.textContent = window.pa.explain(error, "Approval");
-            });
-        });
-        card.append(button);
+      if (message.approvalId && !settled(message.text)) {
+        card.append(
+          decisionButton("Approve", message.approvalId, "approve", text),
+          decisionButton("Deny", message.approvalId, "deny", text),
+        );
       }
       thread.append(card);
       continue;
@@ -161,6 +150,30 @@ function renderSessions(state) {
   }
 }
 
+function settled(text) {
+  const value = String(text ?? "");
+  return (
+    value.includes("(approved)") ||
+    value.includes("(denied)") ||
+    value.includes("(cancelled)")
+  );
+}
+
+function decisionButton(label, id, action, text) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.textContent = label;
+  button.addEventListener("click", () => {
+    window.pa
+      .invoke("chat_approve", { id, action })
+      .then(refresh)
+      .catch((error) => {
+        text.textContent = window.pa.explain(error, "Approval");
+      });
+  });
+  return button;
+}
+
 function setSending(active) {
   sendButton.textContent = active ? "Stop" : "Send";
 }
@@ -176,8 +189,7 @@ async function refresh() {
   activeId = state.activeId || activeId;
   renderSessions(state);
   renderMessages(state.messages);
-  if (state.streaming) {
-    sending = true;
+  if (sending && state.streaming) {
     setSending(true);
   }
   if (state.notice) {
@@ -254,23 +266,34 @@ document.getElementById("new-chat").addEventListener("click", () => {
 
 async function submitChat(text) {
   if (sending) {
+    round += 1;
     await window.pa.invoke("chat_stop", { sessionId: activeId });
+    sending = false;
+    setSending(false);
     await refresh();
     return;
   }
+  const mine = ++round;
   sending = true;
   setSending(true);
   const poll = setInterval(() => {
+    if (mine !== round) {
+      return;
+    }
     refresh().catch(() => {});
   }, 120);
   try {
     await window.pa.invoke("chat_send", { text, sessionId: activeId });
   } catch (error) {
-    modelError.textContent = window.pa.explain(error, "Chat");
+    if (mine === round) {
+      modelError.textContent = window.pa.explain(error, "Chat");
+    }
   } finally {
     clearInterval(poll);
-    sending = false;
-    setSending(false);
+    if (mine === round) {
+      sending = false;
+      setSending(false);
+    }
     await refresh();
   }
 }

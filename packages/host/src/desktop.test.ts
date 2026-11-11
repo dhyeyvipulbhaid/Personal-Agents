@@ -327,6 +327,169 @@ test("a follow-up model error is shown in the chat", async () => {
   }
 });
 
+test("denying the inline approval says the visit was not allowed", async () => {
+  let calls = 0;
+  const { app, methods } = await browserHarness(async (body) => {
+    calls += 1;
+    if (calls === 1) {
+      return toolCallResponse();
+    }
+    const denied = (body.messages ?? []).some((message) =>
+      message.content.includes('"opened":false'),
+    );
+    return textResponse(denied ? "That visit was not allowed." : "hello back");
+  });
+  try {
+    const send = Promise.resolve(
+      methods.chat_send({
+        text: "open example.com and tell me the page title.",
+      }),
+    );
+    const first = await Promise.race([
+      send.then(() => ({ kind: "sent" as const, id: "" })),
+      waitForApproval(methods),
+    ]);
+    if (first.kind !== "approval") {
+      throw new Error("the visit ended before its approval");
+    }
+    await methods.chat_approve({ id: first.id, action: "deny" });
+    const state = JSON.parse(await send) as {
+      streaming: boolean;
+      messages: { role: string; text: string }[];
+    };
+    expect(state.streaming).toBe(false);
+    expect(
+      state.messages.filter((message) => message.role === "approval"),
+    ).toHaveLength(1);
+    expect(
+      state.messages.some((message) => message.text.includes("(denied)")),
+    ).toBe(true);
+    expect(
+      state.messages
+        .filter((message) => message.role === "assistant")
+        .map((message) => message.text)
+        .join("\n"),
+    ).toContain("not allowed");
+    const next = JSON.parse(await methods.chat_send({ text: "say hello" })) as {
+      messages: { role: string; text: string }[];
+    };
+    expect(
+      next.messages.some(
+        (message) => message.role === "assistant" && message.text.length > 0,
+      ),
+    ).toBe(true);
+  } finally {
+    app.close();
+  }
+});
+
+test("stop during a model call ends the turn and the next message works", async () => {
+  let calls = 0;
+  const { app, methods } = await harness(async (_request, onDelta, signal) => {
+    calls += 1;
+    if (calls === 1) {
+      onDelta({ token: "Working" });
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(resolve, 2000);
+        signal?.addEventListener("abort", () => {
+          clearTimeout(timer);
+          reject(new DOMException("The operation was aborted.", "AbortError"));
+        });
+      });
+      return { text: "should not finish" };
+    }
+    return { text: "next ok" };
+  });
+  try {
+    const send = Promise.resolve(methods.chat_send({ text: "stream please" }));
+    await Bun.sleep(30);
+    const stopped = JSON.parse(await methods.chat_stop({})) as {
+      streaming: boolean;
+    };
+    expect(stopped.streaming).toBe(false);
+    const outcome = await Promise.race([
+      send.then((raw) => raw),
+      Bun.sleep(400).then(() => "hung"),
+    ]);
+    expect(outcome).not.toBe("hung");
+    const state = JSON.parse(String(outcome)) as {
+      streaming: boolean;
+      messages: { role: string; text: string }[];
+    };
+    expect(state.streaming).toBe(false);
+    expect(
+      state.messages.some(
+        (message) => message.role === "assistant" && message.text.length > 0,
+      ),
+    ).toBe(true);
+    const next = JSON.parse(await methods.chat_send({ text: "say hello" })) as {
+      messages: { role: string; text: string }[];
+    };
+    expect(next.messages.some((message) => message.text === "next ok")).toBe(
+      true,
+    );
+  } finally {
+    app.close();
+  }
+});
+
+test("stop during a pending approval ends the turn and the next message works", async () => {
+  let calls = 0;
+  const { app, methods } = await harness(async () => {
+    calls += 1;
+    if (calls === 1) {
+      return {
+        text: "",
+        toolCall: {
+          name: "browser.open",
+          arguments: JSON.stringify({ url: "https://example.com" }),
+        },
+      };
+    }
+    return { text: "next ok" };
+  });
+  try {
+    const send = Promise.resolve(
+      methods.chat_send({
+        text: "Open example.com, then summarize my mailbox.",
+      }),
+    );
+    const gate = await Promise.race([
+      send.then(() => ({ kind: "sent" as const, id: "" })),
+      waitForApproval(methods),
+    ]);
+    if (gate.kind !== "approval") {
+      throw new Error("the visit ended before its approval");
+    }
+    const stop = methods.chat_stop({});
+    const outcome = await Promise.race([
+      Promise.all([send, stop]).then(([raw]) => raw),
+      Bun.sleep(400).then(() => "hung"),
+    ]);
+    expect(outcome).not.toBe("hung");
+    const state = JSON.parse(String(outcome)) as {
+      streaming: boolean;
+      messages: { role: string; text: string }[];
+    };
+    expect(state.streaming).toBe(false);
+    expect(JSON.parse(await methods.approvals({}))).toEqual([]);
+    expect(
+      state.messages
+        .filter((message) => message.role === "assistant")
+        .map((message) => message.text)
+        .join("\n"),
+    ).toContain("Stopped.");
+    const next = JSON.parse(await methods.chat_send({ text: "say hello" })) as {
+      messages: { role: string; text: string }[];
+    };
+    expect(next.messages.some((message) => message.text === "next ok")).toBe(
+      true,
+    );
+  } finally {
+    app.close();
+  }
+});
+
 test("a revenue question uses the agent tools and answers 220", async () => {
   const seen: ChatRequest[] = [];
   const { app, methods } = await harness(async (request) => {
