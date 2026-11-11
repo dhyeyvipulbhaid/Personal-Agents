@@ -87,12 +87,122 @@ test("qwen3 tool selection disables thinking", async () => {
   ];
   const messages = [{ role: "user" as const, content: "open example.com" }];
   await connector.chat({ model: "qwen3:8b", messages, tools }, () => {});
-  await connector.chat({ model: "qwen3:8b", messages }, () => {});
+  await connector.chat({ model: "qwen3:4b", messages }, () => {});
   await connector.chat({ model: "llama", messages, tools }, () => {});
   expect(bodies[0]?.think).toBe(false);
   expect(bodies[0]?.tools).toBeDefined();
-  expect(bodies[1]?.think).toBeUndefined();
+  expect(bodies[1]?.think).toBe(false);
   expect(bodies[2]?.think).toBeUndefined();
+});
+
+test("the thinking field and a think block are not shown", async () => {
+  const tokens: string[] = [];
+  const connector = new OllamaConnector(async () => {
+    return new Response(
+      [
+        JSON.stringify({
+          message: { thinking: "plan the click", content: "" },
+        }),
+        JSON.stringify({
+          message: {
+            content:
+              "<think>Okay, the user wants me to navigate.</think>The page title is Example Domain.",
+          },
+          done: true,
+        }),
+      ].join("\n"),
+    );
+  });
+  const result = await connector.chat(
+    {
+      model: "qwen3:4b",
+      messages: [{ role: "user", content: "open example.com" }],
+    },
+    (delta) => tokens.push(delta.token),
+  );
+  expect(result.text).toBe("The page title is Example Domain.");
+  expect(tokens.join("")).toBe(result.text);
+  expect(tokens.join("")).not.toContain("Okay");
+  expect(tokens.join("")).not.toContain("plan the click");
+});
+
+test("an orphan think close tag is stripped", async () => {
+  const tokens: string[] = [];
+  const connector = new OllamaConnector(async () => {
+    return new Response(
+      JSON.stringify({
+        message: {
+          content:
+            "Okay, the user wants me to navigate.</think>The page says hello.",
+        },
+        done: true,
+      }),
+    );
+  });
+  const result = await connector.chat(
+    {
+      model: "qwen3:4b",
+      messages: [{ role: "user", content: "open example.com" }],
+    },
+    (delta) => tokens.push(delta.token),
+  );
+  expect(result.text).toBe("The page says hello.");
+  expect(tokens.join("")).toBe("The page says hello.");
+});
+
+test("a tool call written as plain text is invoked and not shown", async () => {
+  const tokens: string[] = [];
+  const raw =
+    '{"name": "browser.navigate", "arguments": {"url": "https://www.wikipedia.org"}}';
+  const connector = new OllamaConnector(async () => {
+    return new Response(
+      JSON.stringify({ message: { content: raw }, done: true }),
+    );
+  });
+  const tools = [
+    {
+      type: "function" as const,
+      function: {
+        name: "browser.navigate",
+        description: "Open a URL.",
+        parameters: {},
+      },
+    },
+  ];
+  const result = await connector.chat(
+    {
+      model: "qwen2.5-coder:7b",
+      messages: [{ role: "user", content: "open wikipedia" }],
+      tools,
+    },
+    (delta) => tokens.push(delta.token),
+  );
+  expect(result.toolCall).toEqual({
+    name: "browser.navigate",
+    arguments: JSON.stringify({ url: "https://www.wikipedia.org" }),
+  });
+  expect(result.text).toBe("");
+  expect(tokens).toEqual([]);
+});
+
+test("ordinary text is left unchanged", async () => {
+  const connector = new OllamaConnector(async () => {
+    return new Response(
+      JSON.stringify({
+        message: { content: "The page title is Example Domain." },
+        done: true,
+      }),
+    );
+  });
+  const result = await connector.chat(
+    {
+      model: "qwen3:4b",
+      messages: [{ role: "user", content: "hi" }],
+    },
+    () => {},
+  );
+  expect(result.text).toBe("The page title is Example Domain.");
+  expect(result.toolCall).toBeUndefined();
 });
 
 test("aborting the signal cancels a stalled ollama stream", async () => {
