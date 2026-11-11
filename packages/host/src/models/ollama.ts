@@ -44,12 +44,7 @@ export class OllamaConnector implements ModelAdapter {
   ): Promise<ChatResult> {
     const response = await this.http(`${this.origin}/api/chat`, {
       method: "POST",
-      body: JSON.stringify({
-        model: request.model,
-        messages: request.messages.map(ollamaMessage),
-        stream: true,
-        tools: request.tools,
-      }),
+      body: JSON.stringify(ollamaChatBody(request)),
       signal,
     });
     if (!response.ok) {
@@ -96,6 +91,23 @@ export class OllamaConnector implements ModelAdapter {
       return undefined;
     }
   }
+}
+
+function ollamaChatBody(request: ChatRequest): Record<string, unknown> {
+  const body: Record<string, unknown> = {
+    model: request.model,
+    messages: request.messages.map(ollamaMessage),
+    stream: true,
+    tools: request.tools,
+  };
+  if (
+    request.tools &&
+    request.tools.length > 0 &&
+    /qwen3/i.test(request.model)
+  ) {
+    body.think = false;
+  }
+  return body;
 }
 
 function ollamaMessage(message: ChatTurn): Record<string, unknown> {

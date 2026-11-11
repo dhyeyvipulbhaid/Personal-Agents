@@ -36,7 +36,41 @@ function riskClass(label) {
   return "ask";
 }
 
-async function act(action, id, extra) {
+function progressLine(summary) {
+  const text = String(summary ?? "");
+  const click = /click "([^"]+)"/i.exec(text);
+  if (click) {
+    return `Clicking "${click[1]}"…`;
+  }
+  if (/\btype\b/i.test(text)) {
+    return "Typing…";
+  }
+  const open = /(?:visit|navigate to|open)\s+(\S+)/i.exec(text);
+  if (open?.[1]) {
+    return `Opening ${open[1].replace(/[.,]+$/, "")}…`;
+  }
+  return "Working…";
+}
+
+function lockCard(card, statusText) {
+  if (!(card instanceof HTMLElement) || card.dataset.locked === "1") {
+    return false;
+  }
+  card.dataset.locked = "1";
+  const row = card.querySelector(".button-row");
+  for (const node of card.querySelectorAll("button")) {
+    node.disabled = true;
+    node.remove();
+  }
+  const status = document.createElement("p");
+  status.className = "muted";
+  status.dataset.status = "1";
+  status.textContent = statusText;
+  (row ?? card).append(status);
+  return true;
+}
+
+async function act(action, id, extra, refresh = true) {
   await window.pa.invoke("approval_act", {
     action,
     id,
@@ -45,7 +79,9 @@ async function act(action, id, extra) {
     scope: extra.scope || "once",
     until: extra.until || 0,
   });
-  await showRequests();
+  if (refresh) {
+    await showRequests();
+  }
 }
 
 function button(label, className, onClick) {
@@ -125,15 +161,23 @@ function render(next) {
     buttons.className = "button-row";
     buttons.append(
       button("Approve", "", async () => {
+        if (!lockCard(block, progressLine(item.summary))) {
+          return;
+        }
         if (evidence.value !== item.draft) {
-          await act("edit", item.id, { draft: evidence.value });
+          await act("edit", item.id, { draft: evidence.value }, false);
         }
         await act("approve", item.id, { scope: scope.value });
       }),
       button("Edit", "ghost", () =>
         act("edit", item.id, { draft: evidence.value }),
       ),
-      button("Deny", "danger", () => act("deny", item.id, {})),
+      button("Deny", "danger", async () => {
+        if (!lockCard(block, "Denied")) {
+          return;
+        }
+        await act("deny", item.id, {});
+      }),
       button("Snooze", "ghost", () =>
         act("snooze", item.id, { until: snoozeUntil(duration.value) }),
       ),

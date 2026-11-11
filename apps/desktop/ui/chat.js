@@ -20,6 +20,9 @@ const selects = {
 let activeId = "";
 let sending = false;
 let round = 0;
+let paint = 0;
+let optimisticText = "";
+const lockedCards = new Map();
 
 function normalize(parsed) {
   if (Array.isArray(parsed)) {
@@ -74,7 +77,7 @@ function fillSelect(select, models, selected) {
 
 function renderMessages(messages) {
   thread.replaceChildren();
-  if (messages.length === 0) {
+  if (messages.length === 0 && optimisticText.length === 0) {
     const empty = document.createElement("p");
     empty.className = "muted";
     empty.textContent =
@@ -86,13 +89,30 @@ function renderMessages(messages) {
     if (message.role === "approval") {
       const card = document.createElement("article");
       card.className = "card inline-approval";
+      if (message.approvalId) {
+        card.dataset.approvalId = message.approvalId;
+      }
       const text = document.createElement("p");
       text.textContent = message.text;
       card.append(text);
-      if (message.approvalId && !settled(message.text)) {
+      if (settled(message.text)) {
+        lockedCards.delete(message.approvalId);
+      } else if (lockedCards.has(message.approvalId)) {
+        card.dataset.locked = "1";
+        const status = document.createElement("p");
+        status.className = "muted";
+        status.dataset.status = "1";
+        status.textContent = lockedCards.get(message.approvalId);
+        card.append(status);
+      } else if (message.approvalId) {
         card.append(
-          decisionButton("Approve", message.approvalId, "approve", text),
-          decisionButton("Deny", message.approvalId, "deny", text),
+          decisionButton(
+            "Approve",
+            message.approvalId,
+            "approve",
+            message.text,
+          ),
+          decisionButton("Deny", message.approvalId, "deny", message.text),
         );
       }
       thread.append(card);
@@ -121,6 +141,41 @@ function renderMessages(messages) {
     }
     thread.append(bubble);
   }
+  appendThinking(messages);
+  thread.scrollTop = thread.scrollHeight;
+}
+
+function appendThinking(messages) {
+  if (!sending || optimisticText.length === 0) {
+    return;
+  }
+  const answered = messages.some(
+    (message) =>
+      (message.role === "assistant" &&
+        String(message.text ?? "").trim().length > 0) ||
+      (message.role === "approval" && !settled(message.text)),
+  );
+  if (answered) {
+    return;
+  }
+  const echoed = messages.some(
+    (message) => message.role === "user" && message.text === optimisticText,
+  );
+  if (!echoed) {
+    const user = document.createElement("div");
+    user.className = "bubble user";
+    user.textContent = optimisticText;
+    thread.append(user);
+  }
+  const thought = document.createElement("div");
+  thought.className = "bubble assistant";
+  thought.dataset.thinking = "1";
+  thought.textContent = "Thinking…";
+  thread.append(thought);
+}
+
+function showPendingThought() {
+  appendThinking([]);
   thread.scrollTop = thread.scrollHeight;
 }
 
@@ -159,16 +214,62 @@ function settled(text) {
   );
 }
 
-function decisionButton(label, id, action, text) {
+function progressLine(summary) {
+  const text = String(summary ?? "");
+  const click = /click "([^"]+)"/i.exec(text);
+  if (click) {
+    return `Clicking "${click[1]}"…`;
+  }
+  if (/\btype\b/i.test(text)) {
+    return "Typing…";
+  }
+  const open = /(?:visit|navigate to|open)\s+(\S+)/i.exec(text);
+  if (open?.[1]) {
+    return `Opening ${open[1].replace(/[.,]+$/, "")}…`;
+  }
+  return "Working…";
+}
+
+function lockCard(card, statusText) {
+  if (!(card instanceof HTMLElement) || card.dataset.locked === "1") {
+    return false;
+  }
+  card.dataset.locked = "1";
+  const id = card.dataset.approvalId;
+  if (id) {
+    lockedCards.set(id, statusText);
+  }
+  paint += 1;
+  for (const node of card.querySelectorAll("button")) {
+    node.disabled = true;
+    node.remove();
+  }
+  const status = document.createElement("p");
+  status.className = "muted";
+  status.dataset.status = "1";
+  status.textContent = statusText;
+  card.append(status);
+  return true;
+}
+
+function decisionButton(label, id, action, summary) {
   const button = document.createElement("button");
   button.type = "button";
   button.textContent = label;
   button.addEventListener("click", () => {
+    const card = button.closest("article");
+    const statusText = action === "deny" ? "Denied" : progressLine(summary);
+    if (!card || !lockCard(card, statusText)) {
+      return;
+    }
     window.pa
       .invoke("chat_approve", { id, action })
       .then(refresh)
       .catch((error) => {
-        text.textContent = window.pa.explain(error, "Approval");
+        const status = card.querySelector("[data-status]");
+        if (status) {
+          status.textContent = window.pa.explain(error, "Approval");
+        }
       });
   });
   return button;
@@ -180,6 +281,7 @@ function setSending(active) {
 
 async function refresh() {
   const seen = round;
+  const mine = ++paint;
   const state = normalize(
     JSON.parse(
       await window.pa.invoke("chat_state", {
@@ -187,7 +289,7 @@ async function refresh() {
       }),
     ),
   );
-  if (seen !== round) {
+  if (seen !== round || mine !== paint) {
     return state;
   }
   activeId = state.activeId || activeId;
@@ -273,6 +375,7 @@ document.getElementById("new-chat").addEventListener("click", () => {
 async function submitChat(text) {
   if (sending) {
     round += 1;
+    optimisticText = "";
     await window.pa.invoke("chat_stop", { sessionId: activeId });
     sending = false;
     setSending(false);
@@ -281,7 +384,9 @@ async function submitChat(text) {
   }
   const mine = ++round;
   sending = true;
+  optimisticText = text;
   setSending(true);
+  showPendingThought();
   const poll = setInterval(() => {
     if (mine !== round) {
       return;
@@ -298,6 +403,7 @@ async function submitChat(text) {
     clearInterval(poll);
     if (mine === round) {
       sending = false;
+      optimisticText = "";
       setSending(false);
     }
     await refresh();
