@@ -1,5 +1,6 @@
 import type { Approvals } from "../approvals/approvals.ts";
 import type { Check } from "../capabilities/probe.ts";
+import { type ReadablePage, readableFromHtml } from "./read.ts";
 
 export type Rung = 0 | 1 | 5;
 
@@ -27,6 +28,44 @@ export class BrowserSession {
   private readonly seenHosts = new Set<string>();
 
   constructor(private readonly approvals: Approvals) {}
+
+  async read(
+    url: string,
+    load: (url: string) => Promise<string>,
+  ): Promise<
+    ReadablePage & { url: string; opened: boolean; cancelled?: boolean }
+  > {
+    const outcome = await this.visit(url);
+    if (outcome === "cancelled") {
+      return {
+        url,
+        opened: false,
+        cancelled: true,
+        title: "",
+        headings: [],
+        text: "",
+      };
+    }
+    if (outcome !== "opened") {
+      return { url, opened: false, title: "", headings: [], text: "" };
+    }
+    try {
+      const page = readableFromHtml(await load(url));
+      return { url, opened: true, ...page };
+    } catch (error) {
+      if (error instanceof Error && error.name === "AbortError") {
+        return {
+          url,
+          opened: false,
+          cancelled: true,
+          title: "",
+          headings: [],
+          text: "",
+        };
+      }
+      throw error;
+    }
+  }
 
   async visit(url: string): Promise<VisitOutcome> {
     if (this.stopped) {
