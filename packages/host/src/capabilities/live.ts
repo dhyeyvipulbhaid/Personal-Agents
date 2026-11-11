@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { chromeExecutable } from "../browser/drive.ts";
 import { type Check, probeCapabilities } from "./probe.ts";
 
 type Folder = { path: string; readable: boolean };
@@ -15,6 +16,8 @@ const BROWSER_PATHS: { name: string; paths: string[] }[] = [
       "/usr/bin/google-chrome",
       "/usr/bin/google-chrome-stable",
       "/mnt/c/Program Files/Google/Chrome/Application/chrome.exe",
+      "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+      "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
     ],
   },
   {
@@ -43,7 +46,9 @@ const BROWSER_PATHS: { name: string; paths: string[] }[] = [
 export function installedBrowsers(): Browser[] {
   return BROWSER_PATHS.map((browser) => ({
     name: browser.name,
-    installed: browser.paths.some((path) => existsSync(path)),
+    installed:
+      browser.paths.some((path) => existsSync(path)) ||
+      (browser.name === "Chrome" && chromeExecutable() !== null),
   }));
 }
 
