@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SAMPLE_REVENUE_CSV } from "./data/demo.ts";
@@ -112,6 +112,77 @@ test("a stated fact is recalled in a later chat with its session source", async 
   }
 });
 
+test("a revenue question uses the agent tools and answers 220", async () => {
+  const seen: ChatRequest[] = [];
+  const { app, methods } = await harness(async (request) => {
+    seen.push(request);
+    if (seen.length === 1) {
+      return {
+        text: "I don't have access to your files.",
+        toolCall: { name: "revenue.read", arguments: "{}" },
+      };
+    }
+    return {
+      text: "The total in revenue.csv is 220 (North 100, South 80, West 40).",
+    };
+  });
+  try {
+    const state = JSON.parse(
+      await methods.chat_send({ text: "What's the total in revenue.csv?" }),
+    ) as { messages: { role: string; text: string }[] };
+    expect(seen[0]?.model).toBe("qwen3:8b");
+    expect(seen[0]?.tools?.map((tool) => tool.function.name)).toContain(
+      "revenue.read",
+    );
+    expect(
+      seen[1]?.messages.some((message) => message.content.includes("220")),
+    ).toBe(true);
+    const reply = state.messages.find(
+      (message) => message.role === "assistant",
+    );
+    expect(reply?.text).toContain("220");
+    expect(reply?.text).toContain("North 100");
+    expect(reply?.text).toContain("South 80");
+    expect(reply?.text).toContain("West 40");
+  } finally {
+    app.close();
+  }
+});
+
+test("approving a mail draft writes one local outbox file", async () => {
+  const { app, methods, dir } = await harness(async () => ({
+    text: "Thanks for the note about the North contract.",
+  }));
+  try {
+    const mail = JSON.parse(await methods.mail_state({})) as {
+      messages: { id: string; thread: string }[];
+    };
+    const north = mail.messages.find(
+      (message) => message.thread === "North contract",
+    );
+    const drafted = JSON.parse(
+      await methods.mail_draft({ id: north?.id ?? "" }),
+    ) as { approvalId: string; draft: string };
+    expect(drafted.draft).toContain("North contract");
+    await methods.approval_act({
+      action: "approve",
+      id: drafted.approvalId,
+      draft: "",
+      instruction: "",
+      scope: "once",
+      until: 0,
+    });
+    const outbox = join(dir, "outbox");
+    const files = readdirSync(outbox).filter((name) => name.endsWith(".eml"));
+    expect(files).toHaveLength(1);
+    const text = readFileSync(join(outbox, files[0] ?? ""), "utf8");
+    expect(text).toContain("In-Reply-To:");
+    expect(text).toContain("North contract");
+  } finally {
+    app.close();
+  }
+});
+
 test("the builder plans a revenue number widget and waits for approval", async () => {
   const { app, methods } = await harness();
   try {
@@ -136,7 +207,7 @@ test("the builder plans a revenue number widget and waits for approval", async (
       summary: string;
     }[];
     expect(pending.map((item) => item.id)).toEqual([installed.approvalId]);
-    expect(pending[0]?.summary).toContain("qwen2.5-coder:7b");
+    expect(pending[0]?.summary).toBe("install 'Total revenue' widget");
   } finally {
     app.close();
   }
@@ -145,6 +216,7 @@ test("the builder plans a revenue number widget and waits for approval", async (
 async function harness(chat?: ModelAdapter["chat"]): Promise<{
   app: DesktopApp;
   methods: ReturnType<DesktopApp["methods"]>;
+  dir: string;
 }> {
   const dir = mkdtempSync(join(tmpdir(), "pa-desktop-"));
   const adapter: ModelAdapter = {
@@ -167,5 +239,5 @@ async function harness(chat?: ModelAdapter["chat"]): Promise<{
     now: () => Date.parse("2026-11-11T12:00:00.000Z"),
   });
   await app.start();
-  return { app, methods: app.methods() };
+  return { app, methods: app.methods(), dir };
 }

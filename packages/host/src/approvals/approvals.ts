@@ -85,7 +85,7 @@ export class Approvals {
       draft: entry.item.draft,
       instruction: "",
     });
-    this.log(`${entry.item.taskId} approved`, "approved");
+    this.log(`Approved: ${entry.item.summary}`, "approved");
   }
 
   deny(id: string): void {
@@ -95,7 +95,7 @@ export class Approvals {
       draft: entry.item.draft,
       instruction: "",
     });
-    this.log(`${entry.item.taskId} denied`, "denied");
+    this.log(`Denied: ${entry.item.summary}`, "denied");
   }
 
   moreInfo(id: string, instruction: string): void {
@@ -110,8 +110,15 @@ export class Approvals {
 
   edit(id: string, draft: string): void {
     const entry = this.require(id);
+    if (entry.item.draft === draft) {
+      return;
+    }
     entry.item = { ...entry.item, draft };
-    this.log(`${entry.item.taskId} edited: ${draft}`, "edited");
+    const shown = plainText(draft);
+    this.log(
+      shown.length > 0 ? `Edited: ${shown}` : "Edited the draft",
+      "edited",
+    );
   }
 
   snooze(id: string, until: number): void {
@@ -242,4 +249,13 @@ export class PluginConfigs {
       }
     });
   }
+}
+
+function plainText(value: string): string {
+  return value
+    .replace(/<[^>]*>/g, " ")
+    .replace(/&[a-z]+;/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 140);
 }

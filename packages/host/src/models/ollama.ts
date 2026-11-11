@@ -47,7 +47,7 @@ export class OllamaConnector implements ModelAdapter {
         model: request.model,
         messages: request.messages,
         stream: true,
-        tools: request.tools ? [{ type: "function" }] : undefined,
+        tools: request.tools,
       }),
       signal,
     });

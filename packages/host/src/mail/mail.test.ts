@@ -117,9 +117,9 @@ test("approving a draft writes one threaded eml and deny writes nothing", async 
   const text = readFileSync(join(outbox, files[0] ?? ""), "utf8");
   expect(text).toContain("In-Reply-To: <north-4@example.com>");
   expect(text).toContain("edited reply");
-  expect(entries.some((entry) => entry.summary.includes("approved"))).toBe(
-    true,
-  );
+  expect(
+    entries.some((entry) => entry.summary.toLowerCase().includes("approved")),
+  ).toBe(true);
 
   const denied = join(tmpdir(), `pa-deny-${Date.now()}`);
   mkdirSync(denied);

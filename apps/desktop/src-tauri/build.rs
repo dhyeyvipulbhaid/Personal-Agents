@@ -19,6 +19,7 @@ fn main() {
             "chat_new",
             "chat_open",
             "mail_state",
+            "mail_draft",
             "memory_list",
             "memory_remember",
             "memory_delete",

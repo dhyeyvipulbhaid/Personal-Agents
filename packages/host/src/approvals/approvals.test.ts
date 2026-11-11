@@ -17,6 +17,27 @@ function harness(now = 1_700_000_000_000) {
   };
 }
 
+test("an unchanged draft is not logged and markup is not stored in the summary", async () => {
+  const { approvals, entries } = harness();
+  const task = approvals.runTask("builder", async (ctx) => {
+    return ctx.request({
+      summary: "install 'Total revenue' widget",
+      draft: "<p>220</p>",
+      capability: "widget.install",
+    });
+  });
+  const id = approvals.pending()[0]?.id ?? "";
+  approvals.edit(id, "<p>220</p>");
+  expect(entries.some((entry) => entry.decision === "edited")).toBe(false);
+  approvals.edit(id, "<p>221</p>");
+  expect(entries.at(-1)?.summary).toBe("Edited: 221");
+  approvals.approve(id);
+  expect(entries.at(-1)?.summary).toBe(
+    "Approved: install 'Total revenue' widget",
+  );
+  expect(await task).toMatchObject({ decision: "approved" });
+});
+
 test("a task pauses on a request while a second task keeps running", async () => {
   const { approvals, entries } = harness();
   const first = approvals.runTask("alpha", async (task) => {

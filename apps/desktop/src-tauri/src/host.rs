@@ -365,6 +365,17 @@ pub async fn mail_state(host: tauri::State<'_, HostHandle>) -> Result<String, St
 }
 
 #[tauri::command]
+pub async fn mail_draft(host: tauri::State<'_, HostHandle>, id: String) -> Result<String, String> {
+    call_host_params(
+        host,
+        "mail_draft",
+        serde_json::json!({ "id": id }),
+        CHAT_TIMEOUT,
+    )
+    .await
+}
+
+#[tauri::command]
 pub async fn memory_list(host: tauri::State<'_, HostHandle>) -> Result<String, String> {
     call_host(host, "memory_list").await
 }
