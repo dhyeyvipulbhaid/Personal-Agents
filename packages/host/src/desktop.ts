@@ -945,8 +945,7 @@ const LOCAL_TOOLS: ToolDefinition[] = [
     type: "function",
     function: {
       name: "browser.open",
-      description:
-        "Open a URL and return its title, headings, and main text. The first visit to a site waits for approval.",
+      description: "Read a page. The first visit waits for approval.",
       parameters: {
         type: "object",
         properties: { url: { type: "string" } },
@@ -959,7 +958,7 @@ const LOCAL_TOOLS: ToolDefinition[] = [
     function: {
       name: "browser.read",
       description:
-        "Read a page and return its title, headings, and main text. Uses the open Chrome page when that page is already approved. Otherwise fetches the URL. The first visit to a site waits for approval.",
+        "Read the open page, or fetch a URL. The first visit waits for approval.",
       parameters: {
         type: "object",
         properties: { url: { type: "string" } },
@@ -970,8 +969,7 @@ const LOCAL_TOOLS: ToolDefinition[] = [
     type: "function",
     function: {
       name: "browser.navigate",
-      description:
-        "Open a URL in the installed Chrome window. Asks for approval before it navigates.",
+      description: "Open a URL in Chrome. Waits for approval.",
       parameters: {
         type: "object",
         properties: { url: { type: "string" } },
@@ -983,8 +981,7 @@ const LOCAL_TOOLS: ToolDefinition[] = [
     type: "function",
     function: {
       name: "browser.click",
-      description:
-        "Click a CSS selector or visible text in the open Chrome page. Asks for approval first.",
+      description: "Click a selector or visible text. Waits for approval.",
       parameters: {
         type: "object",
         properties: {
@@ -999,8 +996,7 @@ const LOCAL_TOOLS: ToolDefinition[] = [
     type: "function",
     function: {
       name: "browser.type",
-      description:
-        "Type text into a field in the open Chrome page. Asks for approval first.",
+      description: "Type into a field. Waits for approval.",
       parameters: {
         type: "object",
         properties: {
@@ -1015,8 +1011,7 @@ const LOCAL_TOOLS: ToolDefinition[] = [
     type: "function",
     function: {
       name: "browser.screenshot",
-      description:
-        "Save a screenshot of the open Chrome page. Does not ask again when that page is already approved.",
+      description: "Save a screenshot of the open page.",
       parameters: { type: "object", properties: {} },
     },
   },
@@ -1043,7 +1038,7 @@ function localQuestion(text: string): "revenue" | "mail" | "memory" | null {
 }
 
 function toolPrompt(): string {
-  return "You have tools. Call revenue.read for revenue.csv, mail.summary for the mailbox, memory.recall for saved facts, and browser.read to read a page's title, headings, and main text. browser.navigate, browser.click, and browser.type drive the installed Chrome, and each one waits for approval. browser.screenshot saves the open page. The first visit to a site waits for approval. A read of a page you already approved does not ask again. Use the tools instead of saying you cannot open a browser or access a website.";
+  return "Tools: revenue.read, mail.summary, memory.recall, browser.read, browser.navigate, browser.click, browser.type, browser.screenshot. Browser changes wait for approval. Do not say you cannot browse.";
 }
 
 function browserTarget(raw: string): string | undefined {
