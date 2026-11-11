@@ -62,6 +62,12 @@ install_dir="$home/.local/personal-agents"
 mkdir -p "$install_dir"
 cp "$dest" "$install_dir/personal-agents"
 chmod +x "$install_dir/personal-agents"
+# A downloaded file keeps com.apple.quarantine. Clearing it does not need an admin password.
+if [ "$(uname -s)" = "Darwin" ]; then
+  if xattr -p com.apple.quarantine "$install_dir/personal-agents" >/dev/null 2>&1; then
+    xattr -dr com.apple.quarantine "$install_dir/personal-agents"
+  fi
+fi
 
 bindir="$home/.local/bin"
 mkdir -p "$bindir"

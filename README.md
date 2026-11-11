@@ -50,7 +50,13 @@ The host binary is inside the installed app. The computer does not need Bun inst
 
 On Windows the build writes an NSIS installer at `apps/desktop/src-tauri/target/release/bundle/nsis/`. Run that `.exe`. It installs for the current user under `%LOCALAPPDATA%\Personal Agents` and does not ask for an administrator password. A Start Menu shortcut is created under your user profile. Uninstall from Windows Settings, or run `%LOCALAPPDATA%\Personal Agents\uninstall.exe`.
 
-On macOS the build writes `Personal Agents.app` at `apps/desktop/src-tauri/target/release/bundle/macos/`. Zip that app to move it, unzip it into `~/Applications`, and open it. The app is not signed. macOS may ask you to confirm an unknown developer. That confirmation is not an administrator password. Remove the app by moving it from `~/Applications` to the Trash.
+On macOS the build writes `Personal Agents.app` at `apps/desktop/src-tauri/target/release/bundle/macos/`. CI ad-hoc signs the app and the `agent-host` binary inside it (`codesign --force --deep --sign -`), checks that signature (`codesign --verify --deep --strict`), and then zips the app. Unzip the app into `~/Applications` and open it. A download keeps the `com.apple.quarantine` attribute, and macOS then says the app is damaged and can't be opened. Remove that attribute without sudo:
+
+```
+xattr -dr com.apple.quarantine "$HOME/Applications/Personal Agents.app"
+```
+
+`sh install.sh --url <bundle-url> --sha <sha256>` installs under the home folder and removes `com.apple.quarantine` from the installed app. There is no administrator password. Remove the app by moving it from `~/Applications` to the Trash.
 
 Hand checklists live in `docs/manual-tests/`. They cover install, the host, plugins, the user installer, the locked-down gate, activity, approvals, models, chat, files, the revenue tile, and local mail.
 
