@@ -22,6 +22,36 @@ test("the bundled page shows the app name and version", async () => {
   expect(config.build.devUrl).toBeUndefined();
 });
 
+test("the window can ask for the host version", async () => {
+  const html = await Bun.file(
+    new URL("../ui/index.html", import.meta.url),
+  ).text();
+  const script = await Bun.file(
+    new URL("../ui/main.js", import.meta.url),
+  ).text();
+  const capabilities = (await Bun.file(
+    new URL("../src-tauri/capabilities/default.json", import.meta.url),
+  ).json()) as { permissions: string[] };
+  const config = await readConfig();
+
+  expect(html).toContain('id="host-version"');
+  expect(html).toContain('src="main.js"');
+  expect(script).toContain('invoke("host_version")');
+  expect(script).toContain("Agent host ");
+  expect(script).toContain('invoke("note_displayed_host_version"');
+  expect(config.app.withGlobalTauri).toBe(true);
+  expect(config.bundle.externalBin).toEqual(["binaries/agent-host"]);
+  expect(capabilities.permissions).toContain("allow-host-version");
+  expect(capabilities.permissions).toContain(
+    "allow-note-displayed-host-version",
+  );
+  const build = await Bun.file(
+    new URL("../src-tauri/build.rs", import.meta.url),
+  ).text();
+  expect(build).toContain("host_version");
+  expect(build).toContain("note_displayed_host_version");
+});
+
 test("packaging is per-user and unsigned", async () => {
   const config = await readConfig();
   const cargo = await Bun.file(
@@ -50,10 +80,12 @@ async function readConfig(): Promise<{
   identifier: string;
   mainBinaryName: string;
   build: { frontendDist: string; devUrl?: string };
+  app: { withGlobalTauri: boolean };
   bundle: {
     active: boolean;
     publisher: string;
     targets: string[];
+    externalBin: string[];
     windows: {
       webviewInstallMode: { type: string };
       nsis: { installMode: string; installerHooks: string };

@@ -9,7 +9,8 @@
   "scripts": {
     "lint": "biome check .",
     "typecheck": "tsc -p apps/desktop --noEmit && tsc -p packages/host --noEmit",
-    "test": "bun test"
+    "test": "bun test",
+    "build:host": "bun scripts/build-host-sidecar.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.6",

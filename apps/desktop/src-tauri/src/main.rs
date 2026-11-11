@@ -1,18 +1,35 @@
 //! Desktop window. The page is bundled with the app, so the process does not
-//! listen on a network port.
+//! listen on a network port. The agent host is a child process on stdin and
+//! stdout, and it does not listen either.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+mod host;
+mod rpc;
+
+use tauri::{Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
 
 fn main() {
     tauri::Builder::default()
         .setup(|app| {
+            let host = host::HostHandle::start(app).map_err(std::io::Error::other)?;
+            app.manage(host);
             open_window(app)?;
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("failed to open the Personal Agents window");
+        .invoke_handler(tauri::generate_handler![
+            host::host_version,
+            host::note_displayed_host_version
+        ])
+        .build(tauri::generate_context!())
+        .expect("failed to open the Personal Agents window")
+        .run(|app, event| {
+            if matches!(event, RunEvent::Exit) {
+                if let Some(host) = app.try_state::<host::HostHandle>() {
+                    host.stop();
+                }
+            }
+        });
 }
 
 fn open_window(app: &mut tauri::App) -> tauri::Result<()> {

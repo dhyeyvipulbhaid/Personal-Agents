@@ -18,9 +18,46 @@ pid=""
 
 cleanup() {
   if [ -n "${pid}" ]; then
-    kill "$pid" 2>/dev/null || true
     pkill -P "$pid" 2>/dev/null || true
+    kill "$pid" 2>/dev/null || true
   fi
+  if [ -n "${host_bin:-}" ]; then
+    pkill -f "$host_bin" 2>/dev/null || true
+  fi
+}
+
+now_ms() {
+  perl -MTime::HiRes=time -e 'printf "%d\n", time() * 1000'
+}
+
+port_check() {
+  local label="$1"
+  local host_pid="$2"
+  local pids="$pid"
+  local child
+  for child in $(pgrep -P "$pid" || true); do
+    pids="$pids,$child"
+  done
+  case ",$pids," in
+    *,"$host_pid",*) ;;
+    *) pids="$pids,$host_pid" ;;
+  esac
+  echo "port check ($label): lsof -nP -a -p $pids -iTCP -sTCP:LISTEN and -iUDP"
+  local tcp udp
+  tcp="$(lsof -nP -a -p "$pids" -iTCP -sTCP:LISTEN 2>/dev/null || true)"
+  udp="$(lsof -nP -a -p "$pids" -iUDP 2>/dev/null || true)"
+  if [ -n "$tcp" ]; then
+    echo "TCP listen ($label):" >&2
+    echo "$tcp" >&2
+    exit 1
+  fi
+  echo "TCP listen ($label): none"
+  if [ -n "$udp" ]; then
+    echo "UDP listen ($label):" >&2
+    echo "$udp" >&2
+    exit 1
+  fi
+  echo "UDP listen ($label): none"
 }
 trap cleanup EXIT
 
@@ -37,6 +74,18 @@ if [ ! -x "$bin" ]; then
   echo "app executable missing: $bin" >&2
   exit 1
 fi
+host_bin="$app/Contents/MacOS/agent-host"
+if [ ! -x "$host_bin" ]; then
+  echo "agent host binary missing: $host_bin" >&2
+  exit 1
+fi
+case "$host_bin" in
+  "$HOME"/*) ;;
+  *)
+    echo "agent host is outside the home folder: $host_bin" >&2
+    exit 1
+    ;;
+esac
 if [ -e "/Applications/Personal Agents.app" ]; then
   echo "app was written to /Applications" >&2
   exit 1
@@ -80,21 +129,111 @@ case "$support" in
     ;;
 esac
 
-pids_csv="$pid"
-child_pids="$(pgrep -P "$pid" || true)"
-if [ -n "$child_pids" ]; then
-  child_csv="$(printf '%s\n' "$child_pids" | tr '\n' ',' | sed 's/,$//')"
-  pids_csv="$pid,$child_csv"
-fi
-listening="$(lsof -nP -a -p "$pids_csv" -iTCP -sTCP:LISTEN 2>/dev/null || true)"
-if [ -n "$listening" ]; then
-  echo "Personal Agents is listening on a TCP port:" >&2
-  echo "$listening" >&2
+root="$(cd "$(dirname "$0")/../.." && pwd)"
+host_log="$support/host.log"
+expected="$(awk -F'"' '/"version":/ { print $4; exit }' "$root/packages/host/package.json")"
+if [ -z "$expected" ]; then
+  echo "host package version is empty" >&2
   exit 1
 fi
 
-kill "$pid" 2>/dev/null || true
+ready_deadline=$(( $(now_ms) + 20000 ))
+while [ "$(now_ms)" -lt "$ready_deadline" ]; do
+  if ! kill -0 "$pid" 2>/dev/null; then
+    echo "Personal Agents exited early" >&2
+    cat "$log" >&2 || true
+    cat "$host_log" >&2 || true
+    exit 1
+  fi
+  if [ -f "$host_log" ] && grep -q '^host-started pid=' "$host_log" && grep -q '^displayed-host-version: ' "$host_log"; then
+    break
+  fi
+  sleep 0.2
+done
+if ! grep -q '^displayed-host-version: ' "$host_log" 2>/dev/null; then
+  echo "agent host did not report a version" >&2
+  cat "$host_log" >&2 || true
+  cat "$log" >&2 || true
+  exit 1
+fi
+
+first_started="$(awk '/^host-started pid=/ { print; exit }' "$host_log")"
+host_pid="${first_started#host-started pid=}"
+host_pid="${host_pid%% version=*}"
+host_version="${first_started##* version=}"
+displayed="$(awk '/^displayed-host-version: / { sub(/^displayed-host-version: /, ""); print; exit }' "$host_log")"
+if [ "$host_version" != "$expected" ] || [ "$displayed" != "$expected" ]; then
+  echo "version mismatch host=$host_version displayed=$displayed expected=$expected" >&2
+  exit 1
+fi
+echo "agent host version: $host_version"
+echo "displayed host version: $displayed"
+if ! kill -0 "$host_pid" 2>/dev/null; then
+  echo "agent host pid $host_pid is not running" >&2
+  exit 1
+fi
+host_command="$(ps -ww -p "$host_pid" -o command= | sed 's/^[[:space:]]*//')"
+case "$host_command" in
+  "$host_bin"|"$host_bin "*|*"/agent-host"|*"/agent-host "*) ;;
+  *)
+    echo "agent host command is: $host_command" >&2
+    exit 1
+    ;;
+esac
+parent="$(ps -p "$host_pid" -o ppid= | tr -d '[:space:]')"
+if [ "$parent" != "$pid" ]; then
+  echo "agent host parent is $parent, expected $pid" >&2
+  exit 1
+fi
+
+port_check "before restart" "$host_pid"
+
+start_ms="$(now_ms)"
+kill -9 "$host_pid"
+new_pid=""
+while [ $(( $(now_ms) - start_ms )) -lt 3000 ]; do
+  last_started="$(awk '/^host-started pid=/ { line=$0 } END { print line }' "$host_log")"
+  candidate="${last_started#host-started pid=}"
+  candidate="${candidate%% version=*}"
+  if [ -n "$candidate" ] && [ "$candidate" != "$host_pid" ] && kill -0 "$candidate" 2>/dev/null; then
+    new_pid="$candidate"
+    break
+  fi
+  sleep 0.1
+done
+elapsed_ms=$(( $(now_ms) - start_ms ))
+if [ -z "$new_pid" ]; then
+  echo "agent host was not back within 3 seconds (${elapsed_ms}ms)" >&2
+  cat "$host_log" >&2 || true
+  exit 1
+fi
+if ! kill -0 "$pid" 2>/dev/null; then
+  echo "Personal Agents exited when the agent host was stopped" >&2
+  exit 1
+fi
+new_parent="$(ps -p "$new_pid" -o ppid= | tr -d '[:space:]')"
+if [ "$new_parent" != "$pid" ]; then
+  echo "restarted host parent is $new_parent, expected $pid" >&2
+  exit 1
+fi
+new_version="$(awk -v pid="$new_pid" '
+  index($0, "host-started pid=" pid " version=") == 1 {
+    line = substr($0, length("host-started pid=" pid " version=") + 1)
+  }
+  END { print line }
+' "$host_log")"
+if [ "$new_version" != "$expected" ]; then
+  echo "restarted host version $new_version != $expected" >&2
+  exit 1
+fi
+echo "host restart seconds: $(perl -e "printf \"%.3f\", $elapsed_ms / 1000")"
+echo "restarted host pid: $new_pid"
+
+port_check "after restart" "$new_pid"
+
 pkill -P "$pid" 2>/dev/null || true
+pkill -f "$host_bin" 2>/dev/null || true
+kill "$pid" 2>/dev/null || true
 for _ in 1 2 3 4 5 6 7 8 9 10; do
   if ! kill -0 "$pid" 2>/dev/null; then
     break

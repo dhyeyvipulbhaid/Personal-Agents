@@ -58,6 +58,7 @@ function Assert-UnderLocalAppData([string]$Path, [string]$Label) {
 function Stop-AppProcesses {
   $procs = Get-CimInstance Win32_Process | Where-Object {
     $_.Name -eq "personal-agents.exe" -or
+    ($_.Name -eq "agent-host.exe" -and $_.ExecutablePath -like "$installDir\*") -or
     ($_.CommandLine -and (
       $_.CommandLine -like "*\Personal Agents\personal-agents.exe*" -or
       $_.CommandLine -like "*com.personalagents.desktop*"
@@ -68,14 +69,102 @@ function Stop-AppProcesses {
   }
 }
 
-function Assert-NoListeningPorts([int[]]$ProcessIds) {
-  foreach ($procId in $ProcessIds) {
-    $listening = Get-NetTCPConnection -OwningProcess $procId -State Listen -ErrorAction SilentlyContinue
-    if ($listening) {
-      $ports = ($listening | ForEach-Object { $_.LocalPort }) -join ", "
-      throw "process $procId is listening on TCP port $ports"
+function Read-SharedLog([string]$Path) {
+  if (-not (Test-Path -LiteralPath $Path)) {
+    return @()
+  }
+  $stream = [System.IO.File]::Open(
+    $Path,
+    [System.IO.FileMode]::Open,
+    [System.IO.FileAccess]::Read,
+    [System.IO.FileShare]::ReadWrite
+  )
+  try {
+    $reader = New-Object System.IO.StreamReader($stream)
+    $text = $reader.ReadToEnd()
+    $reader.Dispose()
+  } finally {
+    $stream.Dispose()
+  }
+  if (-not $text) {
+    return @()
+  }
+  return @($text -split "`n" | ForEach-Object { $_.TrimEnd("`r") })
+}
+
+function Get-HostStarted([string]$Path) {
+  $rows = @()
+  foreach ($line in @(Read-SharedLog $Path)) {
+    if ($line -match '^host-started pid=(\d+) version=(\S+)$') {
+      $rows += [pscustomobject]@{
+        Pid = [int]$Matches[1]
+        Version = $Matches[2]
+      }
     }
   }
+  return $rows
+}
+
+function Get-DisplayedVersion([string]$Path) {
+  foreach ($line in @(Read-SharedLog $Path)) {
+    if ($line -match '^displayed-host-version: (\S+)$') {
+      return $Matches[1]
+    }
+  }
+  return $null
+}
+
+function Get-ListenTcp([int]$ProcessId) {
+  try {
+    return @(Get-NetTCPConnection -OwningProcess $ProcessId -State Listen -ErrorAction Stop)
+  } catch {
+    if ($_.Exception.Message -match "No matching") {
+      return @()
+    }
+    throw
+  }
+}
+
+function Get-ListenUdp([int]$ProcessId) {
+  try {
+    return @(Get-NetUDPEndpoint -OwningProcess $ProcessId -ErrorAction Stop)
+  } catch {
+    if ($_.Exception.Message -match "No matching") {
+      return @()
+    }
+    throw
+  }
+}
+
+function Assert-NoListeningPorts([int[]]$ProcessIds, [string]$When) {
+  $tcp = @()
+  $udp = @()
+  foreach ($procId in $ProcessIds) {
+    $tcp += @(Get-ListenTcp $procId)
+    $udp += @(Get-ListenUdp $procId)
+  }
+  if ($tcp.Count -eq 0) {
+    Write-Host "TCP listen (${When}): none"
+  } else {
+    $ports = ($tcp | ForEach-Object { "$($_.OwningProcess):$($_.LocalPort)" }) -join ", "
+    throw "listening TCP (${When}): $ports"
+  }
+  if ($udp.Count -eq 0) {
+    Write-Host "UDP listen (${When}): none"
+  } else {
+    $ports = ($udp | ForEach-Object { "$($_.OwningProcess):$($_.LocalPort)" }) -join ", "
+    throw "listening UDP (${When}): $ports"
+  }
+}
+
+function Get-AppProcessIds([int]$AppId, [int]$HostProcessId) {
+  $related = Get-CimInstance Win32_Process | Where-Object {
+    $_.ProcessId -eq $AppId -or
+    $_.ParentProcessId -eq $AppId -or
+    $_.ProcessId -eq $HostProcessId -or
+    ($_.CommandLine -and $_.CommandLine -like "*com.personalagents.desktop*")
+  }
+  return @($related | ForEach-Object { [int]$_.ProcessId } | Select-Object -Unique)
 }
 
 Write-Host "Installer: $($installer.FullName)"
@@ -134,11 +223,25 @@ if (-not (Test-Path -LiteralPath $hkcuPublisher)) {
   throw "per-user publisher key missing: $hkcuPublisher"
 }
 
+$hostExe = Join-Path $installDir "agent-host.exe"
+if (-not (Test-Path -LiteralPath $hostExe)) {
+  throw "agent host binary missing: $hostExe"
+}
+Assert-UnderLocalAppData $hostExe "agent host"
+$hostLog = Join-Path $dataDir "host.log"
+$pkg = Get-Content -Raw -LiteralPath (Join-Path $root "packages\host\package.json") | ConvertFrom-Json
+$expectedVersion = [string]$pkg.version
+if (-not $expectedVersion) {
+  throw "host package version is empty"
+}
+
 $app = Start-Process -FilePath $exe -WorkingDirectory $installDir -PassThru
 $deadline = (Get-Date).AddSeconds(20)
 $dataReady = $false
 while ((Get-Date) -lt $deadline) {
   if ($app.HasExited) {
+    Write-Host "host log:"
+    Read-SharedLog $hostLog | ForEach-Object { Write-Host $_ }
     throw "Personal Agents exited early with code $($app.ExitCode)"
   }
   if (Test-Path -LiteralPath $dataDir) {
@@ -153,18 +256,120 @@ if (-not $dataReady) {
 }
 Assert-UnderLocalAppData $dataDir "webview data"
 
-$related = Get-CimInstance Win32_Process | Where-Object {
-  $_.ProcessId -eq $app.Id -or
-  $_.ParentProcessId -eq $app.Id -or
-  ($_.CommandLine -and $_.CommandLine -like "*com.personalagents.desktop*")
+$readyDeadline = (Get-Date).AddSeconds(20)
+$started = $null
+$displayedVersion = $null
+while ((Get-Date) -lt $readyDeadline) {
+  if ($app.HasExited) {
+    Write-Host "host log:"
+    Read-SharedLog $hostLog | ForEach-Object { Write-Host $_ }
+    throw "Personal Agents exited early with code $($app.ExitCode)"
+  }
+  $aliveIds = @()
+  foreach ($proc in @(Get-Process -Name "agent-host" -ErrorAction SilentlyContinue)) {
+    if (-not $proc.Path) {
+      continue
+    }
+    $full = [System.IO.Path]::GetFullPath($proc.Path)
+    if ($full.Equals([System.IO.Path]::GetFullPath($hostExe), [StringComparison]::OrdinalIgnoreCase)) {
+      $aliveIds += [int]$proc.Id
+    }
+  }
+  foreach ($line in @(Get-HostStarted $hostLog)) {
+    if ($aliveIds -contains $line.Pid) {
+      $started = $line
+      break
+    }
+  }
+  $displayedVersion = Get-DisplayedVersion $hostLog
+  if ($started -and $displayedVersion) {
+    break
+  }
+  Start-Sleep -Milliseconds 200
 }
-$ids = @($related | ForEach-Object { [int]$_.ProcessId })
-Assert-NoListeningPorts $ids
+if (-not $started -or -not $displayedVersion) {
+  Write-Host "host log:"
+  Read-SharedLog $hostLog | ForEach-Object { Write-Host $_ }
+  throw "agent host did not report a version"
+}
+if ($started.Version -ne $expectedVersion) {
+  throw "host version $($started.Version) != $expectedVersion"
+}
+if ($displayedVersion -ne $expectedVersion) {
+  throw "displayed host version $displayedVersion != $expectedVersion"
+}
+Write-Host "agent host version: $($started.Version)"
+Write-Host "displayed host version: $displayedVersion"
+
+$hostProc = Get-CimInstance Win32_Process -Filter "ProcessId=$($started.Pid)"
+if (-not $hostProc) {
+  throw "agent host process $($started.Pid) disappeared"
+}
+if ($hostProc.Name -ne "agent-host.exe") {
+  throw "agent host process name is $($hostProc.Name)"
+}
+if (-not $hostProc.ExecutablePath) {
+  throw "agent host executable path is empty"
+}
+$hostPath = [System.IO.Path]::GetFullPath($hostProc.ExecutablePath)
+if (-not $hostPath.Equals([System.IO.Path]::GetFullPath($hostExe), [StringComparison]::OrdinalIgnoreCase)) {
+  throw "agent host path is $hostPath"
+}
+if ([int]$hostProc.ParentProcessId -ne $app.Id) {
+  throw "agent host parent is $($hostProc.ParentProcessId), expected $($app.Id)"
+}
+
+$ids = @(Get-AppProcessIds $app.Id ([int]$started.Pid))
+Assert-NoListeningPorts $ids "before restart"
+
+$oldProcessId = [int]$started.Pid
+$watch = [System.Diagnostics.Stopwatch]::StartNew()
+Stop-Process -Id $oldProcessId -Force
+$back = $null
+while ($watch.Elapsed.TotalSeconds -lt 3) {
+  foreach ($line in @(Get-HostStarted $hostLog)) {
+    if ($line.Pid -eq $oldProcessId) {
+      continue
+    }
+    $proc = Get-Process -Id $line.Pid -ErrorAction SilentlyContinue
+    if ($proc -and -not $proc.HasExited) {
+      $back = $line
+      break
+    }
+  }
+  if ($back) {
+    break
+  }
+  Start-Sleep -Milliseconds 100
+}
+$watch.Stop()
+$seconds = [math]::Round($watch.Elapsed.TotalSeconds, 3)
+if (-not $back) {
+  Write-Host "host log:"
+  Read-SharedLog $hostLog | ForEach-Object { Write-Host $_ }
+  throw "agent host was not back within 3 seconds (waited $seconds s)"
+}
+$app.Refresh()
+if ($app.HasExited) {
+  throw "Personal Agents exited when the agent host was stopped"
+}
+if ($back.Version -ne $expectedVersion) {
+  throw "restarted host version $($back.Version) != $expectedVersion"
+}
+Write-Host "host restart seconds: $seconds"
+Write-Host "restarted host pid: $($back.Pid)"
+
+$ids = @(Get-AppProcessIds $app.Id ([int]$back.Pid))
+Assert-NoListeningPorts $ids "after restart"
 
 Stop-AppProcesses
 $gone = $false
 for ($i = 0; $i -lt 20; $i++) {
-  if (-not (Get-Process -Name "personal-agents" -ErrorAction SilentlyContinue)) {
+  $appStill = @(Get-Process -Name "personal-agents" -ErrorAction SilentlyContinue).Count
+  $hostStill = @(Get-CimInstance Win32_Process | Where-Object {
+    $_.Name -eq "agent-host.exe" -and $_.ExecutablePath -like "$installDir\*"
+  }).Count
+  if ($appStill -eq 0 -and $hostStill -eq 0) {
     $gone = $true
     break
   }
