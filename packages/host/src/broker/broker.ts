@@ -81,8 +81,12 @@ function judge(
   if (grant.decision === "deny") {
     return { decision: "deny", reason: "grant" };
   }
-  if (request.effects.includes("deletes")) {
-    return { decision: "needs-approval", reason: "deletes" };
+  if (
+    request.effects.includes("deletes") ||
+    request.effects.includes("sends")
+  ) {
+    const reason = request.effects.includes("sends") ? "sends" : "deletes";
+    return { decision: "needs-approval", reason };
   }
   return { decision: "allow", reason: "grant" };
 }

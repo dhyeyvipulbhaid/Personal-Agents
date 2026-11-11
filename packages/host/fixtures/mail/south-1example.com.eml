@@ -1,0 +1,9 @@
+From: b@example.com
+To: employee@example.com
+Subject: South invoice
+Date: Fri, 30 Oct 2026 12:00:00 GMT
+Message-ID: <south-1@example.com>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+
+South invoice note 1
