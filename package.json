@@ -10,7 +10,7 @@
     "lint": "biome check .",
     "typecheck": "tsc -p apps/desktop --noEmit && tsc -p packages/host --noEmit && tsc -p e2e --noEmit",
     "test": "bun test",
-    "test:e2e": "bun e2e/widget-theme.ts && bun e2e/activity.ts && bun e2e/approvals.ts && bun e2e/ollama.ts && bun e2e/chat.ts",
+    "test:e2e": "bun e2e/widget-theme.ts && bun e2e/activity.ts && bun e2e/approvals.ts && bun e2e/ollama.ts && bun e2e/chat.ts && bun e2e/capabilities.ts",
     "build:host": "bun scripts/build-host-sidecar.ts"
   },
   "devDependencies": {

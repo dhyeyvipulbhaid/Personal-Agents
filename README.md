@@ -2,7 +2,7 @@
 
 Personal Agents is a workspace for an employee on a work laptop. It installs without admin rights and runs only with that person's permissions. Chat, a widget page, a natural-language widget builder, memory, a browser agent, and an approvals list live in one app, and each part is a plugin. Version 1 is a local demo: models run in Ollama on the machine, and data comes from local files.
 
-**Status.** The window loads plugins, checks grants, and records decisions. Memory recalls a fact in a later session and keeps each task's notes apart. The builder installs a widget from a spec.
+**Status.** The window loads plugins, checks grants, and records decisions. Capabilities names what is blocked. The browser agent shows each step and stops on request.
 
 ## Repo layout
 
