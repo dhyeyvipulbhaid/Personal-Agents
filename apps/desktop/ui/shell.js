@@ -86,6 +86,33 @@ async function invoke(command, args) {
   return tauri.core.invoke(command, args);
 }
 
+let fontCss = "";
+
+function frameDocument(html, theme) {
+  const safe = theme === "dark" ? "dark" : "light";
+  const themed = String(html).split("__PA_THEME__").join(safe);
+  const style = `<style id="pa-frame">${fontCss}:root{--pa-bg:${safe === "dark" ? "#1a1d27" : "#ffffff"};--pa-ink:${safe === "dark" ? "#f2f4f8" : "#1b1c21"};--pa-muted:${safe === "dark" ? "#c5cbd8" : "#4b5160"};--pa-accent:#4f46e5;}body{font-family:Inter,system-ui,sans-serif;}</style>`;
+  if (themed.includes("</head>")) {
+    return themed.replace("</head>", `${style}</head>`);
+  }
+  return `<!doctype html><html data-theme="${safe}"><head><meta charset="utf-8">${style}</head><body style="margin:16px;background:var(--pa-bg);color:var(--pa-ink)">${themed}</body></html>`;
+}
+
+async function loadWidgetFont() {
+  try {
+    const response = await fetch("fonts/inter-latin-400-normal.woff2");
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    let binary = "";
+    for (let index = 0; index < bytes.length; index += 0x8000) {
+      binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
+    }
+    fontCss = `@font-face{font-family:Inter;src:url(data:font/woff2;base64,${btoa(binary)}) format("woff2");font-weight:400;font-style:normal;}`;
+    document.dispatchEvent(new Event("pa-font"));
+  } catch {
+    fontCss = "";
+  }
+}
+
 window.pa = {
   onTheme(listener) {
     themeListeners.push(listener);
@@ -93,6 +120,7 @@ window.pa = {
   theme() {
     return document.documentElement.dataset.theme === "dark" ? "dark" : "light";
   },
+  frameDocument,
   explain,
   invoke,
 };
@@ -129,6 +157,8 @@ function mountShell() {
         <div class="sidebar-footer">
           <p id="ollama-status">Checking Ollama …</p>
           <p>Running locally. All data stays on this machine.</p>
+          <p id="version">Version 0.0.0</p>
+          <p id="host-version">Agent host …</p>
         </div>
       </aside>
       <main id="main-slot"></main>
@@ -190,8 +220,24 @@ async function showBadge() {
   }
 }
 
+async function showHostVersion() {
+  const node = document.getElementById("host-version");
+  if (!node) {
+    return;
+  }
+  try {
+    const version = await invoke("host_version");
+    node.textContent = `Agent host ${version}`;
+    await invoke("note_displayed_host_version", { version });
+  } catch (error) {
+    node.textContent = explain(error, "Agent host");
+  }
+}
+
 mountShell();
 applyTheme();
+loadWidgetFont();
+showHostVersion();
 themeMedia.addEventListener("change", () => {
   if (themeChoice() === "system") {
     applyTheme();

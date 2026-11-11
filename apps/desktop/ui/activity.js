@@ -22,6 +22,13 @@ function newestFirst(entries) {
   });
 }
 
+function readable(value) {
+  return value
+    .replace(/<[^>]*>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function formatTime(value) {
   if (typeof value !== "string" || value.length === 0) {
     return "";
@@ -65,8 +72,9 @@ async function showActivity() {
         : "event";
     const message = document.createElement("span");
     message.className = "message";
-    message.textContent =
-      typeof entry.summary === "string" ? entry.summary : "";
+    message.textContent = readable(
+      typeof entry.summary === "string" ? entry.summary : "",
+    );
     const plugin = document.createElement("span");
     plugin.className = "plugin";
     plugin.textContent =

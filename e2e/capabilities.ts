@@ -33,9 +33,9 @@ try {
     pathToFileURL(join(import.meta.dir, "../apps/desktop/ui/capabilities.html"))
       .href,
   );
-  await page
-    .getByText("blocked: remote debugging (RemoteDebuggingAllowed)")
-    .waitFor();
+  await page.getByText("Remote debugging").waitFor();
+  await page.getByText("RemoteDebuggingAllowed", { exact: true }).waitFor();
+  await page.getByText("Blocked").first().waitFor();
 } finally {
   await browser.close();
 }

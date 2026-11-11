@@ -442,7 +442,55 @@ button.danger {
 }
 
 .message-list li {
-  grid-template-columns: 180px 1fr 160px 140px;
+  grid-template-columns: 180px 1fr 140px auto;
+}
+
+.bubble p,
+.bubble h3,
+.bubble h4 {
+  margin: 0 0 8px;
+}
+
+.bubble pre {
+  margin: 0 0 8px;
+  padding: 8px;
+  border-radius: 8px;
+  background: var(--sunken);
+  overflow: auto;
+}
+
+.bubble code {
+  font-family: ui-monospace, monospace;
+}
+
+.check-row {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.check-row p {
+  margin: 0;
+}
+
+.chip {
+  display: inline-flex;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.chip.ready {
+  background: var(--good-soft);
+  color: var(--good);
+}
+
+.chip.blocked {
+  background: var(--danger-soft);
+  color: var(--danger);
 }
 
 .ledger time,
