@@ -25,7 +25,15 @@ if ($Url) {
   throw "pass -Url or -Bundle"
 }
 
-$actual = (Get-FileHash -Algorithm SHA256 -Path $dest).Hash.ToLowerInvariant()
+$sha256 = [System.Security.Cryptography.SHA256]::Create()
+$stream = [System.IO.File]::OpenRead($dest)
+try {
+  $hashBytes = $sha256.ComputeHash($stream)
+} finally {
+  $stream.Close()
+  $sha256.Dispose()
+}
+$actual = ([System.BitConverter]::ToString($hashBytes)).Replace("-", "").ToLowerInvariant()
 $expected = $Sha.ToLowerInvariant()
 if ($actual -ne $expected) {
   Remove-Item $dest -Force
