@@ -118,7 +118,7 @@ function Get-ListenTcp([int]$ProcessId) {
   try {
     return @(Get-NetTCPConnection -OwningProcess $ProcessId -State Listen -ErrorAction Stop)
   } catch {
-    if ($_.Exception.Message -match "No matching") {
+    if ($_.Exception.Message -match "No matching|No MSFT_Net") {
       return @()
     }
     throw
@@ -129,7 +129,7 @@ function Get-ListenUdp([int]$ProcessId) {
   try {
     return @(Get-NetUDPEndpoint -OwningProcess $ProcessId -ErrorAction Stop)
   } catch {
-    if ($_.Exception.Message -match "No matching") {
+    if ($_.Exception.Message -match "No matching|No MSFT_Net") {
       return @()
     }
     throw
