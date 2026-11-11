@@ -6,12 +6,17 @@ import { Approvals } from "../packages/host/src/approvals/approvals.ts";
 const approvals = new Approvals(() => {});
 const task = approvals.runTask("alpha", async (ctx) => {
   const result = await ctx.request({
-    summary: "delete the row",
+    summary: "visit example.com",
     draft: "delete row 1",
     capability: "files.delete",
     effects: ["deletes"],
   });
   return result;
+});
+let releaseApprove = () => {};
+let markHeld = () => {};
+const approveHeld = new Promise<void>((resolve) => {
+  markHeld = resolve;
 });
 
 const browser = await chromium.launch();
@@ -26,6 +31,12 @@ try {
       if (command === "approval_act") {
         const id = String(args?.id ?? "");
         const action = String(args?.action ?? "");
+        if (action === "approve") {
+          await new Promise<void>((resolve) => {
+            releaseApprove = resolve;
+            markHeld();
+          });
+        }
         if (action === "edit") {
           approvals.edit(id, String(args?.draft ?? ""));
         } else if (action === "approve") {
@@ -62,10 +73,19 @@ try {
     pathToFileURL(join(import.meta.dir, "../apps/desktop/ui/approvals.html"))
       .href,
   );
-  await page.getByRole("heading", { name: "delete the row" }).waitFor();
+  await page.getByRole("heading", { name: "visit example.com" }).waitFor();
   await page.getByRole("button", { name: "Deny" }).waitFor();
   await page.locator("textarea").fill("delete row 2");
   await page.getByRole("button", { name: "Approve" }).click();
+  await page.getByText("Opening example.com…").waitFor();
+  if ((await page.getByRole("button", { name: "Approve" }).count()) !== 0) {
+    throw new Error("approve stayed clickable");
+  }
+  if ((await page.getByRole("button", { name: "Deny" }).count()) !== 0) {
+    throw new Error("deny stayed clickable");
+  }
+  await approveHeld;
+  releaseApprove();
   await page.getByText("No waiting requests").waitFor();
 } finally {
   await browser.close();

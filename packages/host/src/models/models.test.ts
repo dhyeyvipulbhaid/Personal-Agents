@@ -67,6 +67,34 @@ test("the ollama connector streams tokens and reads a tool call", async () => {
   });
 });
 
+test("qwen3 tool selection disables thinking", async () => {
+  const bodies: { model?: string; think?: boolean; tools?: unknown }[] = [];
+  const connector = new OllamaConnector(async (_url, init) => {
+    bodies.push(JSON.parse(String(init?.body)));
+    return new Response(
+      JSON.stringify({ message: { content: "ok" }, done: true }),
+    );
+  });
+  const tools = [
+    {
+      type: "function" as const,
+      function: {
+        name: "browser.read",
+        description: "Read a page.",
+        parameters: {},
+      },
+    },
+  ];
+  const messages = [{ role: "user" as const, content: "open example.com" }];
+  await connector.chat({ model: "qwen3:8b", messages, tools }, () => {});
+  await connector.chat({ model: "qwen3:8b", messages }, () => {});
+  await connector.chat({ model: "llama", messages, tools }, () => {});
+  expect(bodies[0]?.think).toBe(false);
+  expect(bodies[0]?.tools).toBeDefined();
+  expect(bodies[1]?.think).toBeUndefined();
+  expect(bodies[2]?.think).toBeUndefined();
+});
+
 test("aborting the signal cancels a stalled ollama stream", async () => {
   let sent = false;
   const connector = new OllamaConnector(async () => {
