@@ -185,7 +185,8 @@ test("permission denied uses the demo mailbox and does not read Outlook", async 
   const snap = await mail.snapshot();
   expect(snap.source).toBe("demo");
   expect(snap.count).toBe(30);
-  expect(snap.needsConnect).toBe(false);
+  expect(snap.needsConnect).toBe(true);
+  expect((await mail.describe()).needsConnect).toBe(true);
   expect(snap.status).toContain(DEMO_FALLBACK);
   expect(snap.status).toContain("Automation");
   expect(listed).toBe(0);
@@ -231,6 +232,8 @@ test("Outlook is not read until the connect approval is granted", async () => {
   await again.task;
   const after = await mail.snapshot();
   expect(after.source).toBe("outlook");
+  expect(after.needsConnect).toBe(false);
+  expect((await mail.describe()).needsConnect).toBe(false);
   expect(after.account).toBe("ada@contoso.com");
   expect(after.messages.map((item) => item.subject)).toEqual(["Budget notes"]);
   expect(after.messages[0]?.unread).toBe(true);
@@ -388,6 +391,171 @@ test("a snoozed Outlook draft comes back and still has not been saved", async ()
   expect(approvals.pending()[0]?.capability).toBe("mail.draft");
 });
 
+test("Connect stays available until a signed-in Outlook is granted", async () => {
+  const cases: { state: OutlookStatus["state"]; reason: string }[] = [
+    { state: "signed-in", reason: "" },
+    { state: "signed-out", reason: "not signed in" },
+    { state: "not-running", reason: "not running" },
+    { state: "not-running", reason: "script" },
+    { state: "permission-denied", reason: "automation blocked" },
+  ];
+  for (const item of cases) {
+    const mail = mailbox(statusOnly(item.state, item.reason));
+    const snap = await mail.snapshot();
+    expect(snap.needsConnect).toBe(true);
+    expect(snap.source).toBe("demo");
+    expect((await mail.describe()).needsConnect).toBe(true);
+  }
+});
+
+test("missing and New Outlook keep the demo mailbox and hide Connect", async () => {
+  for (const state of ["missing", "new-outlook"] as const) {
+    const mail = mailbox(
+      statusOnly(state, state === "missing" ? "not installed" : "new outlook"),
+    );
+    const snap = await mail.snapshot();
+    expect(snap.needsConnect).toBe(false);
+    expect(snap.source).toBe("demo");
+    expect(snap.status).toContain(DEMO_FALLBACK);
+    expect((await mail.describe()).needsConnect).toBe(false);
+  }
+  expect(snapStatus("new-outlook")).toContain("New Outlook");
+});
+
+test("a readable inbox counts as signed in when the address cannot be parsed", () => {
+  const status = statusFromProbe({
+    platform: "mac",
+    appExists: true,
+    running: true,
+    newOutlook: false,
+    report: { ok: true, state: "signed-in", account: "", inbox: true },
+  });
+  expect(status.state).toBe("signed-in");
+  expect(status.account).toBe("");
+  expect(
+    statusFromProbe({
+      platform: "mac",
+      appExists: true,
+      running: true,
+      newOutlook: false,
+      report: { ok: true, state: "signed-out", account: "", inbox: false },
+    }).state,
+  ).toBe("signed-out");
+});
+
+test("Mac detect reads an address object, an IMAP account, and a readable inbox", () => {
+  const withAddress = macDetect({
+    defaultAccount() {
+      return { emailAddress: () => ({ address: "ada@contoso.com" }) };
+    },
+    inbox: () => ({ messages: () => ({ length: 2 }) }),
+  });
+  expect(withAddress.state).toBe("signed-in");
+  expect(withAddress.account).toBe("ada@contoso.com");
+
+  const imap = macDetect({
+    defaultAccount() {
+      throw new Error("none");
+    },
+    exchangeAccounts: () => [],
+    imapAccounts: () => [
+      { emailAddress: () => ({ address: () => "imap@contoso.com" }) },
+    ],
+    inbox: () => ({ messages: () => ({ length: 1 }) }),
+  });
+  expect(imap.state).toBe("signed-in");
+  expect(imap.account).toBe("imap@contoso.com");
+
+  const unparsed = macDetect({
+    defaultAccount() {
+      return { emailAddress: () => ({ name: "Ada" }) };
+    },
+    exchangeAccounts: () => [],
+    imapAccounts: () => [],
+    popAccounts: () => [],
+    accounts: () => [],
+    inbox: () => ({ messages: () => ({ length: 4 }) }),
+  });
+  expect(unparsed.state).toBe("signed-in");
+  expect(unparsed.account).toBe("");
+
+  expect(
+    macDetect({
+      defaultAccount() {
+        throw new Error("none");
+      },
+      exchangeAccounts: () => [],
+      imapAccounts: () => [],
+      popAccounts: () => [],
+      accounts: () => [],
+      inbox() {
+        throw new Error("no inbox");
+      },
+    }).state,
+  ).toBe("signed-out");
+});
+
+test("Windows detect checks every account and a readable inbox before signed-out", () => {
+  const detect =
+    WIN_SCRIPT.split("if ($op -eq 'detect')")[1]?.split(
+      "if ($op -eq 'list')",
+    )[0] ?? "";
+  expect(detect).toContain("$ns.Accounts");
+  expect(detect).toContain("SmtpAddress");
+  expect(detect).toContain("GetDefaultFolder(6)");
+  expect(detect.indexOf("signed-out")).toBeGreaterThan(
+    detect.indexOf("GetDefaultFolder(6)"),
+  );
+});
+
+test("connecting while Outlook is not ready explains the retry and does not grant", async () => {
+  const cases: {
+    state: OutlookStatus["state"];
+    reason: string;
+    message: RegExp;
+  }[] = [
+    {
+      state: "signed-out",
+      reason: "not signed in",
+      message: /Sign in to Outlook on this computer, then click Connect again/,
+    },
+    {
+      state: "not-running",
+      reason: "not running",
+      message:
+        /Open Outlook, sign in, leave it running, then click Connect again/,
+    },
+    {
+      state: "permission-denied",
+      reason: "automation blocked",
+      message: /System Settings → Privacy & Security → Automation/,
+    },
+  ];
+  for (const item of cases) {
+    const { app, methods } = await hostWith(
+      statusOnly(item.state, item.reason),
+    );
+    try {
+      await expect(methods.mail_connect({})).rejects.toThrow(item.message);
+      const snap = JSON.parse(await methods.mail_state({})) as {
+        needsConnect: boolean;
+        source: string;
+      };
+      expect(snap.needsConnect).toBe(true);
+      expect(snap.source).toBe("demo");
+      const report = JSON.parse(await methods.capabilities({})) as {
+        plugins: { name: string; connect?: boolean }[];
+      };
+      expect(report.plugins.find((card) => card.name === "Mail")?.connect).toBe(
+        true,
+      );
+      expect(JSON.parse(await methods.approvals({}))).toEqual([]);
+    } finally {
+      app.close();
+    }
+  }
+});
+
 test("the Outlook scripts stay on this computer", () => {
   for (const script of [MAC_SCRIPT, WIN_SCRIPT]) {
     const lower = script.toLowerCase();
@@ -498,6 +666,70 @@ function grantedAdapter(
 
 function tempRoot(): string {
   return mkdtempSync(join(tmpdir(), "pa-outlook-"));
+}
+
+function statusOnly(
+  state: OutlookStatus["state"],
+  reason: string,
+): OutlookAdapter {
+  return {
+    async detect() {
+      return { state, platform: "mac", account: "", reason };
+    },
+    async list() {
+      return [];
+    },
+    async read() {
+      return "";
+    },
+    async createReplyDraft() {
+      return { id: "unused" };
+    },
+    async sendDraft() {},
+  };
+}
+
+function snapStatus(state: OutlookStatus["state"]): string {
+  return fallbackLine(
+    { state, platform: "mac", account: "", reason: "" },
+    false,
+  );
+}
+
+function macDetect(outlook: object): {
+  state: string;
+  account: string;
+  inbox?: boolean;
+} {
+  const load = new Function(`${MAC_SCRIPT}\nreturn detectAccount;`) as () => (
+    value: object,
+  ) => { state: string; account: string; inbox?: boolean };
+  return load()(outlook);
+}
+
+async function hostWith(outlook: OutlookAdapter): Promise<{
+  app: DesktopApp;
+  methods: ReturnType<DesktopApp["methods"]>;
+}> {
+  const adapter: ModelAdapter = {
+    async listModels() {
+      return [];
+    },
+    async chat() {
+      return { text: "ok" };
+    },
+    async structured<T>(): Promise<T> {
+      return {} as T;
+    },
+  };
+  const app = new DesktopApp({
+    dataDir: tempRoot(),
+    adapter,
+    outlook,
+    probe: async () => "stopped",
+  });
+  await app.start();
+  return { app, methods: app.methods() };
 }
 
 async function desktop(

@@ -27,8 +27,8 @@ import { loadRevenueView, type RevenueView } from "./files/snapshot.ts";
 import type { RevenueRow } from "./files/table.ts";
 import { replyRecipients } from "./mail/mail.ts";
 import {
+  connectFailure,
   createLocalOutlook,
-  fallbackLine,
   type OutlookAdapter,
 } from "./mail/outlook.ts";
 import { MAIL_USER } from "./mail/sample.ts";
@@ -545,11 +545,12 @@ export class DesktopApp {
 
   private async connectOutlook() {
     const status = await this.mail.detectFresh();
-    if (status.state !== "signed-in") {
-      throw new Error(fallbackLine(status, this.mail.granted()));
-    }
-    if (this.mail.granted()) {
+    if (status.state === "signed-in" && this.mail.granted()) {
       return { connected: true, approvalId: "" };
+    }
+    const blocked = connectFailure(status);
+    if (blocked) {
+      throw new Error(blocked);
     }
     const existing = this.approvals
       .pending()

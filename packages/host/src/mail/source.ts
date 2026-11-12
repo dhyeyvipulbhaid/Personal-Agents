@@ -306,7 +306,10 @@ export class LocalMail {
   }
 
   private canConnect(status: OutlookStatus, granted: boolean): boolean {
-    return status.state === "signed-in" && !granted;
+    if (granted) {
+      return false;
+    }
+    return status.state !== "missing" && status.state !== "new-outlook";
   }
 }
 

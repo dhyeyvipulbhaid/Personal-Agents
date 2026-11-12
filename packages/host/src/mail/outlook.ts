@@ -57,6 +57,7 @@ export type ScriptReport = {
   code?: string;
   id?: string;
   body?: string;
+  inbox?: boolean;
   messages?: OutlookListedMessage[];
 };
 
@@ -119,6 +120,28 @@ export function fallbackLine(status: OutlookStatus, granted: boolean): string {
   return `Outlook is not installed. ${DEMO_FALLBACK}.`;
 }
 
+/** Why Connect cannot finish yet. Null when the read approval may be raised. */
+export function connectFailure(status: OutlookStatus): string | null {
+  if (status.state === "signed-in") {
+    return null;
+  }
+  if (status.state === "not-running" && status.reason === "script") {
+    return "Outlook did not answer. Leave it open and click Connect again.";
+  }
+  if (status.state === "not-running") {
+    return "Open Outlook, sign in, leave it running, then click Connect again.";
+  }
+  if (status.state === "permission-denied") {
+    return status.platform === "windows"
+      ? "Windows blocked Outlook automation. Allow it for this account, then click Connect again."
+      : "macOS blocked Automation for Outlook. Allow Personal Agents in System Settings → Privacy & Security → Automation, then click Connect again.";
+  }
+  if (status.state === "signed-out") {
+    return "Sign in to Outlook on this computer, then click Connect again.";
+  }
+  return fallbackLine(status, false);
+}
+
 export function statusFromProbe(input: ProbeInput): OutlookStatus {
   const base = {
     platform: input.platform,
@@ -152,8 +175,14 @@ export function statusFromProbe(input: ProbeInput): OutlookStatus {
   }
   const account =
     typeof report.account === "string" ? report.account.trim() : "";
-  if (report.state === "signed-in" && account.includes("@")) {
-    return { ...base, state: "signed-in", account, reason: "" };
+  const accountOk = account.includes("@");
+  if (report.state === "signed-in" && (accountOk || report.inbox === true)) {
+    return {
+      ...base,
+      state: "signed-in",
+      account: accountOk ? account : "",
+      reason: "",
+    };
   }
   if (report.state === "not-running") {
     return { ...base, state: "not-running", reason: "not running" };
@@ -317,6 +346,7 @@ function cleanReport(value: Record<string, unknown>): ScriptReport {
     id: typeof value.id === "string" ? value.id : undefined,
     body:
       typeof value.body === "string" ? value.body.slice(0, 4_000) : undefined,
+    inbox: value.inbox === true,
     messages,
   };
 }
@@ -491,9 +521,8 @@ async function defaultRun(
   }
 }
 
-export const MAC_SCRIPT = `ObjC.import("Foundation");
-
-function run() {
+export const MAC_SCRIPT = `function run() {
+  ObjC.import("Foundation");
   try {
     return JSON.stringify(main());
   } catch (error) {
@@ -559,27 +588,61 @@ function textOf(value) {
   return String(value);
 }
 
-function detectAccount(outlook) {
-  var account = "";
-  try { account = textOf(outlook.defaultAccount().emailAddress()); } catch (error) {}
-  if (account.indexOf("@") === -1) {
-    try {
-      var accounts = outlook.exchangeAccounts();
-      if (accounts.length > 0) account = textOf(accounts[0].emailAddress());
-    } catch (error) {}
-  }
-  var count = outlook.inbox().messages().length;
-  if (account.indexOf("@") === -1) return { ok: true, state: "signed-out", account: "" };
-  return { ok: true, state: "signed-in", account: account, count: count };
+function addressOf(recipient) {
+  if (recipient == null) return "";
+  if (typeof recipient === "string") return recipient;
+  try {
+    var email = recipient.emailAddress;
+    email = typeof email === "function" ? email.call(recipient) : email;
+    if (typeof email === "string" && email.indexOf("@") !== -1) return email;
+    if (email) {
+      var inner = email.address;
+      inner = typeof inner === "function" ? inner.call(email) : inner;
+      var fromInner = textOf(inner);
+      if (fromInner.indexOf("@") !== -1) return fromInner;
+      var fromEmail = textOf(email);
+      if (fromEmail.indexOf("@") !== -1) return fromEmail;
+    }
+  } catch (error) {}
+  try {
+    var direct = recipient.address;
+    direct = typeof direct === "function" ? direct.call(recipient) : direct;
+    var plain = textOf(direct);
+    if (plain.indexOf("@") !== -1) return plain;
+  } catch (error) {}
+  return "";
 }
 
-function addressOf(recipient) {
+function firstAccountEmail(outlook) {
   try {
-    var email = recipient.emailAddress();
-    if (email && email.address) return textOf(email.address());
+    var primary = addressOf(outlook.defaultAccount());
+    if (primary.indexOf("@") !== -1) return primary;
   } catch (error) {}
-  try { return textOf(recipient.address()); } catch (error) {}
+  var lists = ["exchangeAccounts", "imapAccounts", "popAccounts", "accounts"];
+  for (var i = 0; i < lists.length; i++) {
+    try {
+      var group = outlook[lists[i]]();
+      var count = group && group.length ? group.length : 0;
+      for (var n = 0; n < count; n++) {
+        var email = addressOf(group[n]);
+        if (email.indexOf("@") !== -1) return email;
+      }
+    } catch (error) {}
+  }
   return "";
+}
+
+function detectAccount(outlook) {
+  var account = firstAccountEmail(outlook);
+  var inbox = false;
+  try {
+    var count = outlook.inbox().messages().length;
+    inbox = typeof count === "number";
+  } catch (error) {}
+  if (account.indexOf("@") !== -1 || inbox) {
+    return { ok: true, state: "signed-in", account: account.indexOf("@") === -1 ? "" : account, inbox: inbox };
+  }
+  return { ok: true, state: "signed-out", account: "", inbox: false };
 }
 
 function preview(value) {
@@ -759,9 +822,34 @@ $ns = $outlook.Session
 if ($op -eq 'detect') {
   $account = ''
   try { $account = Smtp $ns.CurrentUser.AddressEntry } catch {}
-  if (-not $account) { try { $account = [string]$ns.CurrentUser.Address } catch {} }
-  if ($account -notlike '*@*') { Emit @{ ok = $true; state = 'signed-out'; account = '' }; exit 0 }
-  Emit @{ ok = $true; state = 'signed-in'; account = $account }
+  if ($account -notlike '*@*') { try { $account = [string]$ns.CurrentUser.Address } catch {} }
+  if ($account -notlike '*@*') {
+    try {
+      foreach ($acct in $ns.Accounts) {
+        $smtp = ''
+        try { $smtp = [string]$acct.SmtpAddress } catch {}
+        if ($smtp -notlike '*@*') {
+          try { $smtp = Smtp $acct.CurrentUser.AddressEntry } catch {}
+        }
+        if ($smtp -like '*@*') { $account = $smtp; break }
+      }
+    } catch {}
+  }
+  $inboxOk = $false
+  try {
+    $inbox = $ns.GetDefaultFolder(6)
+    $null = $inbox.Items.Count
+    $inboxOk = $true
+  } catch {}
+  if ($account -like '*@*') {
+    Emit @{ ok = $true; state = 'signed-in'; account = $account; inbox = $inboxOk }
+    exit 0
+  }
+  if ($inboxOk) {
+    Emit @{ ok = $true; state = 'signed-in'; account = ''; inbox = $true }
+    exit 0
+  }
+  Emit @{ ok = $true; state = 'signed-out'; account = ''; inbox = $false }
   exit 0
 }
 function MapItem($item, $folder) {
