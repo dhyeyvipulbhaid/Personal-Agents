@@ -525,6 +525,9 @@ export class DesktopApp {
     const recalled = await this.recallFacts(text);
     const kind = localQuestion(text);
     const direct = directBrowse(text);
+    if (direct?.trust) {
+      this.browser.trust(direct.url);
+    }
     const approvalsBefore = session.chat.messages.filter(
       (message) => message.role === "approval",
     ).length;
@@ -813,6 +816,7 @@ export class DesktopApp {
       });
     }
     markApproval(entry, "(approved)");
+    markApproval(entry, "(read)");
     return JSON.stringify(result);
   }
 
@@ -879,8 +883,23 @@ export class DesktopApp {
     ) {
       entry.text = `${entry.text} ${result.message}`;
     }
+    if (!item && result.allowed && result.opened === true && result.url) {
+      let host = result.url;
+      try {
+        host = new URL(result.url).host;
+      } catch {
+        host = result.url;
+      }
+      session.chat.messages.push({
+        role: "approval",
+        text: `visit ${host} (read)`,
+      });
+    }
     if (item) {
       markApproval(entry, result.allowed ? "(approved)" : "(denied)");
+      if (result.allowed && result.opened === true) {
+        markApproval(entry, "(read)");
+      }
     }
     return JSON.stringify(result);
   }
@@ -983,6 +1002,10 @@ export class DesktopApp {
       activeId: session.id,
       messages: session.chat.messages,
       streaming: session.streaming,
+      pending: this.approvals
+        .pending()
+        .filter((item) => item.taskId === "browser" || item.taskId === "chat")
+        .map((item) => ({ id: item.id, summary: item.summary })),
       models: this.selected(),
       notice: this.notice,
     };
@@ -1128,20 +1151,29 @@ const LOCAL_TOOLS: ToolDefinition[] = [
   },
 ];
 
-function directBrowse(text: string): { url: string; read: boolean } | null {
+function directBrowse(
+  text: string,
+): { url: string; read: boolean; trust: boolean } | null {
   const trimmed = text.trim();
+  const read = /^(?:please\s+)?read\s+(\S+)\s*$/i.exec(trimmed);
+  if (read) {
+    const url = siteUrl(read[1] ?? "");
+    if (url) {
+      return { url, read: true, trust: true };
+    }
+  }
   const open = /^(?:please\s+)?(?:open|visit|go to)\s+(\S+)\s*$/i.exec(trimmed);
   if (open) {
     const url = siteUrl(open[1] ?? "");
     if (url) {
-      return { url, read: false };
+      return { url, read: false, trust: false };
     }
   }
   if (!asksLivePage(trimmed)) {
     return null;
   }
   const url = siteUrl(trimmed);
-  return url ? { url, read: true } : null;
+  return url ? { url, read: true, trust: false } : null;
 }
 
 function asksLivePage(text: string): boolean {
@@ -1194,6 +1226,7 @@ function toolPrompt(): string {
     "Browser actions still wait for approval.",
     "Do not say you cannot browse.",
     "If a browser tool result includes no page text, say only whether the page opened. Do not describe the page.",
+    "A background read does not open the site. Do not say the page is open or that you opened it.",
   ].join(" ");
 }
 
@@ -1277,12 +1310,16 @@ function settled(text: string): boolean {
   return (
     text.includes("(approved)") ||
     text.includes("(denied)") ||
-    text.includes("(cancelled)")
+    text.includes("(cancelled)") ||
+    text.includes("(read)")
   );
 }
 
 function markApproval(entry: { text: string } | undefined, mark: string): void {
-  if (!entry || settled(entry.text) || entry.text.includes(mark)) {
+  if (!entry || entry.text.includes(mark)) {
+    return;
+  }
+  if (mark !== "(read)" && settled(entry.text)) {
     return;
   }
   entry.text = `${entry.text} ${mark}`;

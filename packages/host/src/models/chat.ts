@@ -105,38 +105,34 @@ export class ChatSession {
           assistant.text = navigateReply(toolOutput);
           return { text: assistant.text };
         }
-        if (
-          tools?.forced?.name === "browser.read" &&
-          call.name === "browser.read"
-        ) {
+        if (call.name === "browser.read" || call.name === "browser.open") {
           const read = readForAnswer(toolOutput);
-          if (read.failed) {
+          if (!read.failed) {
+            result = await this.adapter.chat(
+              {
+                model,
+                messages: [
+                  {
+                    role: "system",
+                    content: `You read this page in the background. It is not open. Answer using only the page text. Include this link: ${read.url}. Do not say the site is open or that you opened it. Do not add facts that are not in the text.`,
+                  },
+                  { role: "user", content: text },
+                  {
+                    role: "user",
+                    content: `Page text from ${read.url}:\n${read.pageText}`,
+                  },
+                ],
+              },
+              onDelta,
+              controller.signal,
+            );
+            assistant.text = finishReadAnswer(result.text, read.url);
+            return { text: assistant.text };
+          }
+          if (tools?.forced?.name === "browser.read") {
             assistant.text = read.fallback;
             return { text: read.fallback };
           }
-          result = await this.adapter.chat(
-            {
-              model,
-              messages: [
-                {
-                  role: "system",
-                  content: `Answer using only the page text. Include this link: ${read.url}. Do not add facts that are not in the text.`,
-                },
-                { role: "user", content: text },
-                {
-                  role: "user",
-                  content: `Page text from ${read.url}:\n${read.pageText}`,
-                },
-              ],
-            },
-            onDelta,
-            controller.signal,
-          );
-          const reply = result.text.trim();
-          assistant.text = reply.includes(read.url)
-            ? reply
-            : `${reply}\n${read.url}`.trim();
-          return { text: assistant.text };
         }
         messages.push({
           role: "assistant",
@@ -299,6 +295,17 @@ function fixedDenial(parsed: ToolPayload): string {
       : `Not allowed: I didn't type into "${field}".`;
   }
   return `Not allowed: I didn't open ${host.length > 0 ? host : "that page"}.`;
+}
+
+function finishReadAnswer(reply: string, url: string): string {
+  const text = reply
+    .trim()
+    .replace(/\bopened\b/gi, "read")
+    .replace(/\bis open\b/gi, "was read");
+  if (url.length === 0 || text.includes(url)) {
+    return text;
+  }
+  return `${text}\n${url}`.trim();
 }
 
 function readForAnswer(output: string): {

@@ -73,17 +73,18 @@ const adapter: ModelAdapter = {
     if (pageText.includes("Live store text")) {
       markApple();
       await appleGate;
-      return { text: "The page shows Live store text.\nhttps://apple.com/" };
+      return {
+        text: "The Apple website is open and displays a range of products.",
+      };
     }
-    const tool = request.messages.find((message) => message.role === "tool");
-    if (!tool?.content.includes("illustrative examples in documents")) {
-      return { text: "The tool did not return the page text." };
+    if (pageText.includes("illustrative examples in documents")) {
+      markAnswer();
+      await answerGate;
+      return {
+        text: "Example Domain says this domain is for use in illustrative examples in documents.",
+      };
     }
-    markAnswer();
-    await answerGate;
-    return {
-      text: "Example Domain says this domain is for use in illustrative examples in documents.",
-    };
+    return { text: "The tool did not return the page text." };
   },
   async structured<T>(): Promise<T> {
     return {} as T;
@@ -149,6 +150,18 @@ try {
   if (cards.length !== 1 || !cards[0]?.includes("visit example.com")) {
     throw new Error(`approval cards were ${cards.join(" | ")}`);
   }
+  await page.getByText("Waiting for approval…").waitFor();
+  await page.getByRole("link", { name: "Review" }).waitFor();
+  if ((await page.getByRole("button", { name: "Send" }).count()) !== 0) {
+    throw new Error("Send was active while approval was pending");
+  }
+  if (
+    (await page
+      .locator(".approval-status", { hasText: "Read example.com" })
+      .count()) !== 0
+  ) {
+    throw new Error("the read looked finished before it was approved");
+  }
   await approve.click();
   await page
     .locator(".approval-status", { hasText: "Read example.com" })
@@ -192,9 +205,12 @@ try {
     throw new Error("Thinking was not under the read line");
   }
   releaseApple();
-  await page
-    .locator(".bubble.assistant", { hasText: "Live store text" })
-    .waitFor();
+  const answer = page.locator(".bubble.assistant").last();
+  await answer.getByRole("link", { name: "apple.com" }).waitFor();
+  const shown = await answer.innerText();
+  if (/\bopen(?:ed)?\b/i.test(shown)) {
+    throw new Error(`the answer claimed the site was open: ${shown}`);
+  }
   if ((await page.locator("[data-thinking]").count()) !== 0) {
     throw new Error("Thinking stayed after the page answer");
   }
