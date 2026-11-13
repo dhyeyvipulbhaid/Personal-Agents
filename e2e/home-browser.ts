@@ -39,6 +39,7 @@ const adapter: ModelAdapter = {
 };
 
 const waits: (() => void)[] = [];
+let navigated = 0;
 
 async function releaseHeld() {
   const started = Date.now();
@@ -63,6 +64,7 @@ const app = new DesktopApp({
     return {
       async send(method: string, params?: Record<string, unknown>) {
         if (method === "Page.navigate") {
+          navigated += 1;
           href = String(params?.url ?? href);
           return {};
         }
@@ -185,6 +187,53 @@ try {
   await page.locator("#browser-idle").waitFor();
   if (calls < 2) {
     throw new Error("the model was not asked to navigate");
+  }
+
+  const navigatedBeforeRead = navigated;
+  const originalFetch = globalThis.fetch;
+  let releaseFetch: (() => void) | undefined;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input).includes("example.com")) {
+      await new Promise<void>((_resolve, reject) => {
+        const timer = setTimeout(
+          () => reject(new Error("the read was not stopped")),
+          8_000,
+        );
+        const fail = () => {
+          clearTimeout(timer);
+          const error = new Error("Stopped.");
+          error.name = "AbortError";
+          reject(error);
+        };
+        releaseFetch = fail;
+        init?.signal?.addEventListener("abort", fail, { once: true });
+      });
+      return new Response(
+        "<title>Example</title><main><p>Example Domain</p></main>",
+      );
+    }
+    return originalFetch(input, init);
+  }) as typeof fetch;
+  try {
+    const question = Promise.resolve(
+      methods.chat_send({ text: "What is on the example.com homepage?" }),
+    );
+    await page.locator("#browser-pending").waitFor();
+    await page.locator("#browser-site", { hasText: "example.com" }).waitFor();
+    await page
+      .locator("#browser-step", { hasText: "Reading example.com" })
+      .waitFor();
+    await page.getByRole("button", { name: "Stop" }).click();
+    await page.getByRole("button", { name: "Stopping…" }).waitFor();
+    await releaseHeld();
+    await page.locator("#browser-idle").waitFor();
+    await question;
+    if (navigated !== navigatedBeforeRead) {
+      throw new Error("a background read focused Chrome");
+    }
+  } finally {
+    releaseFetch?.();
+    globalThis.fetch = originalFetch;
   }
 } finally {
   waits.shift()?.();

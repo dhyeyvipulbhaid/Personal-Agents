@@ -49,6 +49,10 @@ export function stepText(summary: string): string {
   if (typed?.[1]) {
     return `Typing into "${typed[1]}"`;
   }
+  const reading = /\bread(?:ing)?\s+(\S+)/i.exec(summary);
+  if (reading?.[1]) {
+    return `Reading ${reading[1].replace(/[.,]+$/, "")}`;
+  }
   const open = /(?:visit|navigate to|open)\s+(\S+)/i.exec(summary);
   if (open?.[1]) {
     return `Opening ${open[1].replace(/[.,]+$/, "")}`;
