@@ -194,11 +194,22 @@ function renderMessages(messages) {
   thread.scrollTop = thread.scrollHeight;
 }
 
+function currentTurn(messages) {
+  let start = 0;
+  for (let index = 0; index < messages.length; index += 1) {
+    if (messages[index].role === "user") {
+      start = index;
+    }
+  }
+  return messages.slice(start);
+}
+
 function appendThinking(messages) {
   if (!sending || optimisticText.length === 0) {
     return;
   }
-  const answered = messages.some(
+  const turn = currentTurn(messages);
+  const answered = turn.some(
     (message) =>
       (message.role === "assistant" &&
         String(message.text ?? "").trim().length > 0) ||
