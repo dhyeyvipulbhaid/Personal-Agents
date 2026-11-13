@@ -180,23 +180,24 @@ try {
     throw new Error(`thumbnail was ${src}`);
   }
   await page.locator("#browser-site", { hasText: "example.com" }).waitFor();
-  const stop = page.getByRole("button", { name: "Stop" });
-  await stop.click();
-  await page.getByRole("button", { name: "Stopping…" }).waitFor();
-  await releaseHeld();
-  await page.locator("#browser-idle").waitFor();
+  await page
+    .locator("#browser-step", { hasText: "Opened example.com" })
+    .waitFor();
+  if ((await page.getByRole("button", { name: "Stop" }).count()) !== 0) {
+    throw new Error("Stop stayed after navigate finished");
+  }
   if (calls < 2) {
     throw new Error("the model was not asked to navigate");
   }
 
   const navigatedBeforeRead = navigated;
   const originalFetch = globalThis.fetch;
-  let releaseFetch: (() => void) | undefined;
+  let finishFetch: (() => void) | undefined;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-    if (String(input).includes("example.com")) {
-      await new Promise<void>((_resolve, reject) => {
+    if (String(input).includes("apple.com")) {
+      await new Promise<void>((resolve, reject) => {
         const timer = setTimeout(
-          () => reject(new Error("the read was not stopped")),
+          () => reject(new Error("the background read did not finish")),
           8_000,
         );
         const fail = () => {
@@ -205,34 +206,66 @@ try {
           error.name = "AbortError";
           reject(error);
         };
-        releaseFetch = fail;
+        finishFetch = () => {
+          clearTimeout(timer);
+          init?.signal?.removeEventListener("abort", fail);
+          resolve();
+        };
         init?.signal?.addEventListener("abort", fail, { once: true });
       });
       return new Response(
-        "<title>Example</title><main><p>Example Domain</p></main>",
+        "<title>Apple</title><main><p>Live store text</p></main>",
       );
     }
     return originalFetch(input, init);
   }) as typeof fetch;
   try {
     const question = Promise.resolve(
-      methods.chat_send({ text: "What is on the example.com homepage?" }),
+      methods.chat_send({ text: "What is on the apple.com homepage?" }),
     );
     await page.locator("#browser-pending").waitFor();
-    await page.locator("#browser-site", { hasText: "example.com" }).waitFor();
+    await page.locator("#browser-site", { hasText: "apple.com" }).waitFor();
     await page
-      .locator("#browser-step", { hasText: "Reading example.com" })
+      .locator("#browser-step", { hasText: "Reading apple.com" })
       .waitFor();
-    await page.getByRole("button", { name: "Stop" }).click();
-    await page.getByRole("button", { name: "Stopping…" }).waitFor();
-    await releaseHeld();
-    await page.locator("#browser-idle").waitFor();
+    if ((await page.getByRole("button", { name: "Stop" }).count()) !== 1) {
+      throw new Error("Stop was missing while the page was reading");
+    }
+    if ((await page.locator(".browser-thumb").count()) !== 0) {
+      throw new Error("a background read showed an empty thumbnail");
+    }
+    await methods.chat_approve({
+      id:
+        (JSON.parse(await methods.approvals({})) as { id: string }[])[0]?.id ??
+        "",
+      action: "approve",
+    });
+    const waitFetch = Date.now();
+    while (!finishFetch) {
+      if (Date.now() - waitFetch > 3_000) {
+        throw new Error("the background fetch did not start");
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    finishFetch();
+    await page
+      .locator("#browser-step", { hasText: "Read apple.com" })
+      .waitFor();
+    if (
+      (await page.locator("#browser-step", { hasText: "Reading" }).count()) !==
+      0
+    ) {
+      throw new Error("the widget stayed on Reading after the read finished");
+    }
+    if ((await page.getByRole("button", { name: "Stop" }).count()) !== 0) {
+      throw new Error("Stop stayed after the read finished");
+    }
     await question;
     if (navigated !== navigatedBeforeRead) {
       throw new Error("a background read focused Chrome");
     }
   } finally {
-    releaseFetch?.();
+    finishFetch?.();
     globalThis.fetch = originalFetch;
   }
 } finally {

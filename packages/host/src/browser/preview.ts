@@ -16,6 +16,7 @@ export type BrowserActivity = {
   currentStep: string;
   pendingApproval?: { id: string; summary: string };
   recentActions: BrowserAction[];
+  busy: boolean;
 };
 
 export function thumbParams(): Record<string, unknown> {
@@ -49,6 +50,14 @@ export function stepText(summary: string): string {
   if (typed?.[1]) {
     return `Typing into "${typed[1]}"`;
   }
+  const doneRead = /^done read\s+(\S+)/i.exec(summary);
+  if (doneRead?.[1]) {
+    return `Read ${doneRead[1].replace(/[.,]+$/, "")}`;
+  }
+  const doneNavigate = /^done navigate\s+(\S+)/i.exec(summary);
+  if (doneNavigate?.[1]) {
+    return `Opened ${doneNavigate[1].replace(/[.,]+$/, "")}`;
+  }
   const reading = /\bread(?:ing)?\s+(\S+)/i.exec(summary);
   if (reading?.[1]) {
     return `Reading ${reading[1].replace(/[.,]+$/, "")}`;
@@ -69,6 +78,8 @@ type PreviewSource = {
   pendingApproval(): { id: string; summary: string } | undefined;
   recentActions(): BrowserAction[];
   capture(): Promise<string>;
+  busy?(): boolean;
+  wantsThumb?(): boolean;
 };
 
 /** Decides when Home should receive browser thumbnails. */
@@ -137,13 +148,15 @@ export class BrowserPreview {
     return {
       active: open,
       streaming: this.streaming && open,
-      thumbnail: open ? this.thumbnail : "",
+      thumbnail:
+        open && this.source.wantsThumb?.() !== false ? this.thumbnail : "",
       url: this.source.pageUrl(),
       site,
       currentStep:
         summary.length > 0 ? stepText(summary) : open ? `On ${site}` : "",
       pendingApproval: this.source.pendingApproval(),
       recentActions: this.source.recentActions().slice(0, 5),
+      busy: this.source.busy?.() === true,
     };
   }
 
