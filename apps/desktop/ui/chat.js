@@ -153,10 +153,6 @@ function renderMessages(messages) {
       continue;
     }
     if (message.role === "memory") {
-      const note = document.createElement("p");
-      note.className = "memory-note";
-      note.textContent = message.text;
-      thread.append(note);
       continue;
     }
     const role = message.role === "user" ? "user" : "assistant";
