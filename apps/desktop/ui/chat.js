@@ -5,6 +5,25 @@ const defaults = {
 };
 
 const thread = document.getElementById("thread");
+thread?.addEventListener("click", (event) => {
+  const link = event.target.closest("a[href]");
+  if (!link) {
+    return;
+  }
+  const href = link.href;
+  if (!/^https?:\/\//i.test(href)) {
+    return;
+  }
+  event.preventDefault();
+  const open = window.pa?.invoke?.("open_link", { url: href });
+  if (open && typeof open.catch === "function") {
+    open.catch(() => {
+      window.open(href, "_blank", "noopener,noreferrer");
+    });
+    return;
+  }
+  window.open(href, "_blank", "noopener,noreferrer");
+});
 const sessions = document.getElementById("sessions");
 const modelError = document.getElementById("model-error");
 const modelNotice = document.getElementById("model-notice");

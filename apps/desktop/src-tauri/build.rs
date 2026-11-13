@@ -27,6 +27,7 @@ fn main() {
             "memory_delete",
             "builder_plan",
             "builder_install",
+            "open_link",
         ]),
     );
     tauri_build::try_build(attributes).expect("failed to run tauri build");

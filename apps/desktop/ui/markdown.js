@@ -29,10 +29,67 @@ function lineHtml(line) {
 }
 
 function inlineHtml(line) {
-  const escaped = escapeHtml(line);
+  const pieces = line.split("`");
+  return pieces
+    .map((piece, index) => {
+      if (index % 2 === 1) {
+        return `<code>${escapeHtml(piece)}</code>`;
+      }
+      return linkify(piece);
+    })
+    .join("");
+}
+
+function linkify(text) {
+  const pattern =
+    /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)|https?:\/\/[^\s<>)\]]+/g;
+  let html = "";
+  let last = 0;
+  for (const match of text.matchAll(pattern)) {
+    html += emphasis(escapeHtml(text.slice(last, match.index)));
+    const rawHref = match[1] ? match[2] : match[0];
+    const href = webUrl(rawHref);
+    if (!href) {
+      html += emphasis(escapeHtml(match[0]));
+    } else {
+      const label = linkLabel(match[1] ?? rawHref, href);
+      html += `<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label)}</a>`;
+    }
+    last = match.index + match[0].length;
+  }
+  html += emphasis(escapeHtml(text.slice(last)));
+  return html;
+}
+
+function webUrl(raw) {
+  const trimmed = String(raw ?? "").replace(/[.,;:!?]+$/g, "");
+  try {
+    const url = new URL(trimmed);
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      return "";
+    }
+    return url.href;
+  } catch {
+    return "";
+  }
+}
+
+function linkLabel(label, href) {
+  const text = String(label ?? "").trim();
+  try {
+    const host = new URL(href).host.replace(/^www\./i, "");
+    if (text.length === 0 || /^https?:\/\//i.test(text)) {
+      return host;
+    }
+    return text;
+  } catch {
+    return text;
+  }
+}
+
+function emphasis(escaped) {
   return escaped
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-    .replace(/`([^`]+)`/g, "<code>$1</code>")
     .replace(/\*([^*]+)\*/g, "<em>$1</em>");
 }
 
