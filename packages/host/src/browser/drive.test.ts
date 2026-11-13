@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createFakeExtractor } from "memory-bank";
 import { type ActivityEntry, Approvals } from "../approvals/approvals.ts";
 import { DesktopApp } from "../desktop.ts";
 import type { ChatRequest, ModelAdapter } from "../models/adapter.ts";
@@ -412,6 +413,7 @@ test("chat shows one click card and a denial does not click", async () => {
     dataDir: dir,
     adapter,
     probe: async () => "running",
+    memoryExtractor: createFakeExtractor(() => []),
     chromePath: "chrome",
     browserConnect: async () => ({
       async send(method: string, params?: Record<string, unknown>) {
@@ -518,6 +520,7 @@ test("stop during a pending click does not click", async () => {
     dataDir: mkdtempSync(join(tmpdir(), "pa-drive-stop-")),
     adapter,
     probe: async () => "running",
+    memoryExtractor: createFakeExtractor(() => []),
     chromePath: "chrome",
     browserConnect: async () => ({
       async send(method: string, params?: Record<string, unknown>) {

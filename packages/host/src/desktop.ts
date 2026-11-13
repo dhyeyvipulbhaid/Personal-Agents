@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import type { Extractor } from "memory-bank";
 import { type ActivityEntry, Approvals } from "./approvals/approvals.ts";
 import { decide } from "./broker/broker.ts";
 import {
@@ -34,7 +35,12 @@ import {
   writeReply,
 } from "./mail/mail.ts";
 import { MAIL_USER } from "./mail/sample.ts";
-import { MemoryStore } from "./memory/memory.ts";
+import {
+  CHAT_AGENT_ID,
+  ChatMemory,
+  type ChatMemoryClient,
+} from "./memory/chat-memory.ts";
+import type { MemoryFact } from "./memory/memory.ts";
 import {
   type ModelAdapter,
   type ModelCapabilities,
@@ -116,9 +122,9 @@ const PERMISSIONS: Omit<PluginCard, "health">[] = [
   {
     id: "memory",
     name: "Memory",
-    summary: "Keeps facts you save on this machine.",
+    summary: "Keeps chat facts on this machine.",
     permissions: [
-      "Stores facts for this app on this machine.",
+      "Saves facts after a chat reply, and when you save one on the Memory page.",
       "This version does not encrypt memory.",
     ],
   },
@@ -145,13 +151,16 @@ export type DesktopOptions = {
     send(method: string, params?: Record<string, unknown>): Promise<unknown>;
     close(): Promise<void>;
   }>;
+  memory?: ChatMemoryClient;
+  /** When omitted, retain uses the agent model at 127.0.0.1:11434. */
+  memoryExtractor?: Extractor;
 };
 
 /** The packaged host: widgets, chat, sample data, and the pages' RPC methods. */
 export class DesktopApp {
   readonly settings = new ModelSettings();
   private readonly kernel = new PluginKernel();
-  private readonly memory = new MemoryStore();
+  private readonly memory: ChatMemoryClient;
   private readonly adapter: ModelAdapter;
   private readonly probe: () => Promise<"running" | "stopped">;
   private readonly now: () => number;
@@ -225,6 +234,14 @@ export class DesktopApp {
       this.settings,
     );
     this.paths = seedDemoData(options.dataDir);
+    this.memory =
+      options.memory ??
+      new ChatMemory({
+        dataDir: options.dataDir,
+        agentId: CHAT_AGENT_ID,
+        extractor: options.memoryExtractor,
+        model: () => this.settings.get("agent"),
+      });
   }
 
   async start(): Promise<void> {
@@ -236,6 +253,12 @@ export class DesktopApp {
     this.preview.stop();
     this.kernel.close();
     void this.drive.close();
+    try {
+      this.memory.close();
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : "unknown";
+      console.error(`memory close failed: ${detail}`);
+    }
   }
 
   methods(): RpcMethods {
@@ -311,19 +334,17 @@ export class DesktopApp {
       mail_state: () => JSON.stringify(this.mailbox()),
       mail_draft: async (params) =>
         JSON.stringify(await this.draftReply(params)),
-      memory_list: () => JSON.stringify(this.memory.view()),
-      memory_remember: (params) => {
+      memory_list: () => JSON.stringify(this.memory.list()),
+      memory_remember: async (params) => {
         const text = stringField(params, "text").trim();
         if (text.length === 0) {
           throw new Error("Write a fact before saving it.");
         }
-        const source =
-          stringField(params, "sessionId", "session_id") || this.ensure().id;
-        return JSON.stringify(this.memory.remember(source, text));
+        return JSON.stringify(await this.memory.remember(text));
       },
       memory_delete: (params) => {
         this.memory.delete(stringField(params, "id"));
-        return JSON.stringify(this.memory.view());
+        return JSON.stringify(this.memory.list());
       },
       builder_plan: (params) => JSON.stringify(this.planWidget(params)),
       builder_install: (params) => JSON.stringify(this.installWidget(params)),
@@ -499,28 +520,24 @@ export class DesktopApp {
     if (session.title === "New chat" && text.trim().length > 0) {
       session.title = text.trim().slice(0, 48);
     }
-    if (isFact(text)) {
-      this.memory.remember(session.id, text.trim());
-    }
-    const recalled = text.trim().endsWith("?") ? this.memory.recall(text) : [];
+    const recalled = await this.recallFacts(text);
     const kind = localQuestion(text);
-    const remembered =
-      recalled.length > 0
-        ? recalled
-            .map((fact) => `${fact.text} (source ${fact.source})`)
-            .join("\n")
-        : "";
+    const remembered = recalled
+      .map((fact) => `${fact.text} (source ${fact.source})`)
+      .join("\n");
     const context = [toolPrompt(), remembered]
       .filter((part) => part.length > 0)
       .join("\n");
     const turn = ++this.chatTurn;
     session.streaming = true;
+    let completed = false;
     try {
       await session.chat.send(text, context, {
         model: kind ? this.settings.get("agent") : this.settings.get("chat"),
         definitions: LOCAL_TOOLS,
         runTool: (call, signal) => this.runLocalTool(call, signal),
       });
+      completed = true;
       for (const fact of recalled) {
         session.chat.messages.push({
           role: "memory",
@@ -544,7 +561,30 @@ export class DesktopApp {
     if (kind === "revenue") {
       this.groundRevenue(session);
     }
+    if (completed) {
+      const assistant = [...session.chat.messages]
+        .reverse()
+        .find((item) => item.role === "assistant");
+      this.keepExchange(text, assistant?.text ?? "");
+    }
     return JSON.stringify(this.view(session));
+  }
+
+  private async recallFacts(query: string): Promise<MemoryFact[]> {
+    try {
+      return await this.memory.recallFacts(query);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : "unknown";
+      console.error(`memory recall failed: ${detail}`);
+      return [];
+    }
+  }
+
+  private keepExchange(user: string, assistant: string): void {
+    void this.memory.retainExchange(user, assistant).catch((error: unknown) => {
+      const detail = error instanceof Error ? error.message : "unknown";
+      console.error(`memory retain failed: ${detail}`);
+    });
   }
 
   private async draftReply(params: unknown) {
@@ -706,7 +746,7 @@ export class DesktopApp {
         query = call.arguments;
       }
       const facts =
-        query.length > 0 ? this.memory.recall(query) : this.memory.view();
+        query.length > 0 ? await this.recallFacts(query) : this.memory.list();
       return JSON.stringify(facts);
     }
     throw new Error(`Unknown tool ${call.name}`);
@@ -1278,13 +1318,6 @@ function act(
     );
   }
   return queue.pending();
-}
-
-function isFact(text: string): boolean {
-  const trimmed = text.trim();
-  return (
-    trimmed.length >= 12 && !trimmed.endsWith("?") && /\bis\b/i.test(trimmed)
-  );
 }
 
 export function modelNotInstalledMessage(model: string): string {

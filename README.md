@@ -8,6 +8,14 @@ Chat can read a page after one approval, and it can drive the Chrome already ins
 
 The window is one shell for every page: Home, Chat, Approvals, Activity, Capabilities, Builder, Memory, and Mail. Chat, the agent, and the builder use `qwen3:4b`, `qwen3:8b`, and `qwen2.5-coder:7b`. Pull a missing model with `ollama pull <model>`. The sample revenue file and the demo mailbox are copied into the app data folder the first time the host starts. A page says what failed and what to do when a dependency is missing.
 
+## Chat memory
+
+When a chat reply finishes, the app asks the local model to pull facts out of that exchange. The save runs in the background, so a slow model does not hold the reply on screen. The next message you send reads those facts back into the prompt. Saving a fact on the Memory page writes to the same place. If the save or the read fails, chat still answers, and a failed save writes nothing. A reply that never finishes is not saved.
+
+Facts live in one SQLite file, `memory-bank.sqlite`, inside the app data folder. On macOS that folder is `~/Library/Application Support/com.personalagents.desktop`. On Windows it is `%LOCALAPPDATA%\com.personalagents.desktop`. The file is not encrypted. This version has one chat agent, named `chat`. A fact saved for that agent is visible in later chats. A different agent id in the same file cannot read it.
+
+Each prompt gets at most 400 tokens of facts. A token here is `ceil(characters / 4)` of the fact text. Extraction uses the agent model (`qwen3:8b` unless you change it on Chat) at `127.0.0.1:11434`, with thinking turned off. Pull it with `ollama pull qwen3:8b`. The store is the [memory-bank](https://github.com/dhyeyvipulbhaid/memory-bank) library at commit `5639870198b8250e32bc9e53ddf6cb8ad924ef1d`.
+
 ## Repo layout
 
 - `apps/desktop` is the desktop shell, a Tauri 2 window. The page is bundled with the app.
@@ -64,7 +72,7 @@ xattr -dr com.apple.quarantine "$HOME/Applications/Personal Agents.app"
 
 `sh install.sh --url <bundle-url> --sha <sha256>` installs under the home folder and removes `com.apple.quarantine` from the installed app. There is no administrator password. Remove the app by moving it from `~/Applications` to the Trash.
 
-Hand checklists live in `docs/manual-tests/`. They cover install, the host, plugins, the user installer, the locked-down gate, activity, approvals, models, chat, files, the revenue tile, and local mail.
+Hand checklists live in `docs/manual-tests/`. They cover install, the host, plugins, the user installer, the locked-down gate, activity, approvals, models, chat, files, the revenue tile, local mail, and chat memory.
 
 ## Roadmap at a glance
 

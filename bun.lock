@@ -21,6 +21,9 @@
     "packages/host": {
       "name": "@personal-agents/host",
       "version": "0.0.0",
+      "dependencies": {
+        "memory-bank": "github:dhyeyvipulbhaid/memory-bank#5639870198b8250e32bc9e53ddf6cb8ad924ef1d",
+      },
     },
   },
   "packages": {
@@ -119,6 +122,8 @@
     "@typescript/typescript-win32-x64": ["@typescript/typescript-win32-x64@7.0.2", "", { "os": "win32", "cpu": "x64" }, "sha512-0BQ3HkAHHlKLSp1qRvf3SUhGpGsDuhB/jgFw75guyqbxJqEaS0Cw/VFO8i2nHglJUzQCRtMMR/IBAKE3ETMC4g=="],
 
     "bun-types": ["bun-types@1.4.4", "", { "dependencies": { "@types/node": "*", "undici-types": "*" } }, "sha512-yjrJh5oGX7mMPKGd19YXyIjmEuj4G4zNC30bs7PM9Az7NQ3ndF3j6hbeRdvJTRQEhJ/FYQwW0a2moweEi2hMxQ=="],
+
+    "memory-bank": ["memory-bank@github:dhyeyvipulbhaid/memory-bank#5639870", { "bin": { "memory-bank": "./src/cli.ts" } }, "dhyeyvipulbhaid-memory-bank-5639870", "sha512-tPzkXP7gN3iGsLGQAyIjeHdAnNrjnGYqnqtkq/w7X2IjWsENqCBuSvoxgycxbG3YavQjd2Q0ePL1C/VhfJhiLQ=="],
 
     "playwright": ["playwright@1.65.0", "", { "dependencies": { "playwright-core": "1.65.0" }, "bin": { "playwright": "cli.js" } }, "sha512-F3AMWcR44qMBt4kq+6Kb6mX7bjGXshktKFOPULd7reED6ZJWevjbNRqysP7q+AATE9kdPEZBibex1BYsvpVoeA=="],
 
