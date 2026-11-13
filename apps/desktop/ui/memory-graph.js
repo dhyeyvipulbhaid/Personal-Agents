@@ -73,6 +73,12 @@
     }
 
     function remember() {
+      const live = new Set(nodes.map((node) => node.id));
+      for (const id of Object.keys(remembered)) {
+        if (!live.has(id)) {
+          delete remembered[id];
+        }
+      }
       for (const node of nodes) {
         remembered[node.id] = { x: node.x, y: node.y };
       }

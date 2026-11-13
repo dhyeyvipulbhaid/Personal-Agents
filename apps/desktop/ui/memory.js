@@ -108,7 +108,7 @@ function renderFacts(facts) {
     button.addEventListener("click", () => {
       window.pa
         .invoke("memory_delete", { id: fact.id })
-        .then(() => showFacts())
+        .then(() => Promise.all([showFacts(), showGraph()]))
         .catch((error) => showMemoryError(error));
     });
     item.append(box, body, edit, button);
@@ -510,7 +510,7 @@ document.getElementById("delete-selected").addEventListener("click", () => {
   }
   window.pa
     .invoke("memory_delete_many", { ids })
-    .then(() => showFacts())
+    .then(() => Promise.all([showFacts(), showGraph()]))
     .catch((error) => showMemoryError(error));
 });
 
@@ -630,7 +630,7 @@ document.getElementById("sweep-apply").addEventListener("click", () => {
     .invoke("memory_sweep", { dryRun: false })
     .then((raw) => {
       renderSweep(JSON.parse(raw));
-      return showFacts();
+      return Promise.all([showFacts(), showGraph()]);
     })
     .catch((error) => showMemoryError(error));
 });
