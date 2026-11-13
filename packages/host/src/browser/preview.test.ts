@@ -156,6 +156,7 @@ test("a visible subscriber starts frames and hiding or idle stops them", async (
   expect(started.streaming).toBe(true);
   expect(started.currentStep).toBe('Clicking "More information..."');
   expect(stepText("read apple.com")).toBe("Reading apple.com");
+  expect(stepText("done read apple.com")).toBe("Read apple.com");
   if (!timer.tick) {
     throw new Error("the preview did not start");
   }

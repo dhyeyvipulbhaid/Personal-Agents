@@ -46,7 +46,11 @@ function progressLine(summary) {
   if (/\btype\b/i.test(text)) {
     return "Typing…";
   }
-  const open = /(?:visit|navigate to|open)\s+(\S+)/i.exec(text);
+  const visit = /\bvisit\s+(\S+)/i.exec(text);
+  if (visit?.[1]) {
+    return `Reading ${visit[1].replace(/[.,]+$/, "")}…`;
+  }
+  const open = /(?:navigate to|open)\s+(\S+)/i.exec(text);
   if (open?.[1]) {
     return `Opening ${open[1].replace(/[.,]+$/, "")}…`;
   }

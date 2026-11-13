@@ -224,6 +224,8 @@ export class DesktopApp {
         pendingApproval: () => this.browserPending(),
         recentActions: () => this.drive.recentActions(),
         capture: () => this.drive.captureThumb(),
+        busy: () => this.drive.busy(),
+        wantsThumb: () => this.drive.wantsThumb(),
       },
       options.onBrowserActivity ?? (() => {}),
       this.now,
