@@ -123,15 +123,20 @@ export class BrowserDrive {
   private readonly recent: { at: string; summary: string }[] = [];
   private readonly approvedHosts = new Set<string>();
   private shots = 0;
+  private backgroundUrl = "";
+  private abortRead: (() => void) | undefined;
 
   constructor(private readonly options: DriveOptions) {}
 
   hasSession(): boolean {
-    return this.client !== null && this.currentUrl.length > 0;
+    return (
+      (this.client !== null && this.currentUrl.length > 0) ||
+      this.backgroundUrl.length > 0
+    );
   }
 
   pageUrl(): string {
-    return this.currentUrl;
+    return this.currentUrl || this.backgroundUrl;
   }
 
   site(): string {
@@ -168,6 +173,9 @@ export class BrowserDrive {
   }
 
   async halt(): Promise<void> {
+    this.abortRead?.();
+    this.abortRead = undefined;
+    this.backgroundUrl = "";
     this.currentUrl = "";
     this.step = "";
     await this.close();
@@ -369,6 +377,10 @@ export class BrowserDrive {
 
   async read(raw?: string, signal?: AbortSignal): Promise<DriveResult> {
     const url = raw ? canonical(raw) : this.currentUrl;
+    const background = !this.readsOpenPage(url);
+    if (background && url) {
+      this.armBackground(url);
+    }
     if (
       this.client &&
       this.currentUrl &&
@@ -406,8 +418,11 @@ export class BrowserDrive {
       };
     }
     const loaded = await this.options.session.read(url, (target) =>
-      this.options.fetchPage(target, signal),
+      this.options.fetchPage(target, this.liveSignal(signal)),
     );
+    if (loaded.cancelled || !loaded.opened) {
+      this.clearBackground();
+    }
     if (loaded.cancelled) {
       return {
         ok: false,
@@ -808,10 +823,46 @@ export class BrowserDrive {
   }
 
   private hostLabel(): string {
-    if (!this.currentUrl) {
+    const url = this.pageUrl();
+    if (!url) {
       return "";
     }
-    return new URL(this.currentUrl).host;
+    return new URL(url).host;
+  }
+
+  private readsOpenPage(url: string | null): boolean {
+    return (
+      this.client !== null &&
+      this.currentUrl.length > 0 &&
+      url !== null &&
+      samePage(url, this.currentUrl) &&
+      this.approvedHosts.has(new URL(this.currentUrl).host)
+    );
+  }
+
+  private armBackground(url: string): void {
+    this.backgroundUrl = url;
+    this.noteStep(`read ${new URL(url).host}`);
+    this.lastAction = this.now();
+  }
+
+  private clearBackground(): void {
+    this.backgroundUrl = "";
+    if (this.currentUrl.length === 0) {
+      this.step = "";
+    }
+  }
+
+  private liveSignal(parent?: AbortSignal): AbortSignal {
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    this.abortRead = abort;
+    if (parent?.aborted) {
+      abort();
+    } else {
+      parent?.addEventListener("abort", abort, { once: true });
+    }
+    return controller.signal;
   }
 
   private noteStep(summary: string): void {

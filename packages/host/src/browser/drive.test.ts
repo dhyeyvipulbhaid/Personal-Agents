@@ -1232,6 +1232,32 @@ test("linux and windows do not run the macOS Chrome activate command", async () 
   }
 });
 
+test("a background read shows on the widget without opening Chrome", async () => {
+  let connects = 0;
+  const { drive, approvals } = harness({
+    connect: async (page) => {
+      connects += 1;
+      return new StandIn(page);
+    },
+  });
+  const pending = drive.read("https://example.com/");
+  const approval = approvals.pending()[0];
+  expect(approval?.summary).toBe("visit example.com");
+  expect(drive.site()).toBe("example.com");
+  expect(drive.currentStep()).toBe("read example.com");
+  expect(drive.hasSession()).toBe(true);
+  expect(connects).toBe(0);
+  approvals.approve(approval?.id ?? "");
+  const result = await pending;
+  expect(result.opened).toBe(true);
+  expect(result.text).toContain("from the background");
+  expect(connects).toBe(0);
+  expect(drive.pageUrl()).toBe("https://example.com/");
+  await drive.halt();
+  expect(drive.hasSession()).toBe(false);
+  expect(drive.site()).toBe("");
+});
+
 test("a real Chrome tab matches the reported open state", async () => {
   const chrome = chromeExecutable();
   if (!chrome) {

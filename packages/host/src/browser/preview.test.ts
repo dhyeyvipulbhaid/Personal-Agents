@@ -4,6 +4,7 @@ import {
   type BrowserActivity,
   BrowserPreview,
   shouldStream,
+  stepText,
   THUMB_QUALITY,
   THUMB_WIDTH,
   thumbParams,
@@ -154,6 +155,7 @@ test("a visible subscriber starts frames and hiding or idle stops them", async (
   const started = preview.watch(true);
   expect(started.streaming).toBe(true);
   expect(started.currentStep).toBe('Clicking "More information..."');
+  expect(stepText("read apple.com")).toBe("Reading apple.com");
   if (!timer.tick) {
     throw new Error("the preview did not start");
   }
