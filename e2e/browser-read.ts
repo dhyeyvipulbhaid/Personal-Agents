@@ -231,7 +231,7 @@ try {
   releaseApple();
   const answer = page.locator(".bubble.assistant").last();
   await answer.getByRole("link", { name: "apple.com" }).waitFor();
-  const shown = await answer.innerText();
+  const shown = (await answer.textContent()) ?? "";
   if (/\bopen(?:ed)?\b/i.test(shown)) {
     throw new Error(`the answer claimed the site was open: ${shown}`);
   }
@@ -274,11 +274,7 @@ try {
     .last();
   const returnedBox = await returned.boundingBox();
   const returnedLineBox = await returnedLine.boundingBox();
-  if (
-    !returnedBox ||
-    !returnedLineBox ||
-    returnedLineBox.y >= returnedBox.y
-  ) {
+  if (!returnedBox || !returnedLineBox || returnedLineBox.y >= returnedBox.y) {
     throw new Error("Writing answer was missing after returning to Chat");
   }
   if ((await page.getByRole("button", { name: "Send" }).count()) !== 0) {
@@ -287,7 +283,7 @@ try {
   releaseNamed();
   const summary = page.locator(".bubble.assistant").last();
   await summary.getByRole("link", { name: "apple.com" }).waitFor();
-  const summaryText = await summary.innerText();
+  const summaryText = (await summary.textContent()) ?? "";
   if (summaryText.includes("planning the summary")) {
     throw new Error("the thinking text was shown");
   }

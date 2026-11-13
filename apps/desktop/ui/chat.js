@@ -189,7 +189,7 @@ function renderMessages(messages) {
     }
     const role = message.role === "user" ? "user" : "assistant";
     const visible =
-      role === "assistant" ? visibleAnswer(message.text) : message.text ?? "";
+      role === "assistant" ? visibleAnswer(message.text) : (message.text ?? "");
     if (role === "assistant" && visible.length === 0) {
       continue;
     }
