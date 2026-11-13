@@ -1044,9 +1044,20 @@ test("passphrase encrypt through the handler survives an open WAL bank and then 
         mode: "passphrase",
         force: true,
       }),
-    ) as { encryptionEnabled: boolean; includeObservations: boolean };
+    ) as {
+      encryptionEnabled: boolean;
+      includeObservations: boolean;
+      encryptionChoice: string;
+    };
     expect(status.encryptionEnabled).toBe(true);
+    expect(status.encryptionChoice).toBe("passphrase");
     expect(status.includeObservations).toBe(true);
+    const meta = new Database(memory.file, { readonly: true });
+    const source = meta
+      .query("SELECT value FROM schema_meta WHERE key = 'encryption_source'")
+      .get() as { value: string };
+    meta.close();
+    expect(source.value).toBe("passphrase");
     expect(memory.list().map((fact) => fact.text)).toEqual(["Keep me"]);
     expect(
       JSON.parse(readFileSync(memorySettingsFile(dir), "utf8"))

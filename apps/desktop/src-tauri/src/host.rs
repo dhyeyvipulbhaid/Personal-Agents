@@ -656,6 +656,7 @@ pub async fn memory_enable_passphrase(
 ) -> Result<String, String> {
     let inner = host.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
+        // Passphrase mode never reads or writes the OS keychain.
         let (key, seal) = crate::keychain::seal_passphrase(&passphrase)?;
         save_passphrase(inner.data_dir(), &seal)?;
         inner.remember_key(key.clone());
