@@ -1116,7 +1116,14 @@ function localQuestion(text: string): "revenue" | "mail" | "memory" | null {
 }
 
 function toolPrompt(): string {
-  return "Tools: revenue.read, mail.summary, memory.recall, browser.read, browser.navigate, browser.click, browser.type, browser.screenshot. Browser changes wait for approval. Do not say you cannot browse.";
+  return [
+    "Tools: revenue.read, mail.summary, memory.recall, browser.read, browser.navigate, browser.click, browser.type, browser.screenshot.",
+    "Use a browser tool only when the user explicitly asks to look something up, search, open, visit, read a page, or go to a URL.",
+    "If they only ask a question, answer from memory and your own knowledge, or say you don't know.",
+    "Do not request a page visit just because the answer is missing.",
+    "Browser actions still wait for approval.",
+    "Do not say you cannot browse.",
+  ].join(" ");
 }
 
 function browserTarget(raw: string): string | undefined {
