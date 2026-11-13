@@ -11,6 +11,7 @@ import {
   BrowserDrive,
   type CdpClient,
   chromeExecutable,
+  chromeFrontCommand,
   chromeLaunchArgs,
   openSocket,
   waitForPage,
@@ -162,6 +163,8 @@ function harness(options?: {
   executable?: string | null;
   debuggingBlocked?: boolean;
   connect?: (page: SignInDocument) => Promise<CdpClient>;
+  platform?: NodeJS.Platform;
+  activate?: (command: readonly string[]) => Promise<void>;
 }): {
   drive: BrowserDrive;
   approvals: Approvals;
@@ -188,6 +191,8 @@ function harness(options?: {
       options?.connect ? options.connect(page) : new StandIn(page),
     fetchPage: async () =>
       "<title>Fetched</title><main><h1>Fetched</h1><p>from the background</p></main>",
+    platform: options?.platform ?? "linux",
+    activate: options?.activate ?? (async () => {}),
   });
   return { drive, approvals, session, activity, page, dir };
 }
@@ -795,6 +800,274 @@ test("a huge Chrome result does not stall the next command", async () => {
     server.stop(true);
   }
 });
+
+test("a bare host and its full URL navigate to the same page", async () => {
+  const pairs = [
+    ["www.example.com", "https://www.example.com"],
+    ["en.wikipedia.org/wiki/Earth", "https://en.wikipedia.org/wiki/Earth"],
+    ["www.bbc.com/news", "https://www.bbc.com/news"],
+  ];
+  for (const [name, full] of pairs) {
+    expect(await issuedNavigation(name)).toBe(await issuedNavigation(full));
+  }
+});
+
+test("a closed Chrome is launched again instead of a false open", async () => {
+  let connects = 0;
+  let open = true;
+  const navigated: string[] = [];
+  const { drive, approvals } = harness({
+    connect: async (page) => {
+      connects += 1;
+      const generation = connects;
+      const stand = new StandIn(page);
+      return {
+        async send(method, params) {
+          if (generation === 1 && !open) {
+            throw new Error("Chrome debugging socket closed.");
+          }
+          if (method === "Page.navigate") {
+            navigated.push(String(params?.url ?? ""));
+          }
+          return stand.send(method, params);
+        },
+        async close() {
+          await stand.close();
+        },
+      };
+    },
+  });
+  const first = drive.navigate("https://www.example.com");
+  approvals.approve(approvals.pending()[0]?.id ?? "");
+  const opened = await first;
+  expect(opened.ok).toBe(true);
+  expect(opened.message).toBe("Opened www.example.com in Chrome.");
+  expect(connects).toBe(1);
+
+  open = false;
+  const second = drive.navigate("www.example.com");
+  approvals.approve(approvals.pending()[0]?.id ?? "");
+  const again = await second;
+  expect(again.ok).toBe(true);
+  expect(again.message).toBe("Opened www.example.com in Chrome.");
+  expect(again.message).not.toContain("still loading");
+  expect(connects).toBe(2);
+  expect(navigated).toEqual([
+    "https://www.example.com/",
+    "https://www.example.com/",
+  ]);
+});
+
+test("a stale debugging socket is replaced instead of reporting the page open", async () => {
+  let connects = 0;
+  const { drive, approvals } = harness({
+    connect: async (page) => {
+      connects += 1;
+      const generation = connects;
+      let navigated = 0;
+      const stand = new StandIn(page);
+      return {
+        send(method, params) {
+          if (
+            generation === 1 &&
+            method === "Page.navigate" &&
+            navigated >= 1
+          ) {
+            return new Promise(() => {});
+          }
+          if (method === "Page.navigate") {
+            navigated += 1;
+          }
+          return stand.send(method, params);
+        },
+        async close() {
+          await stand.close();
+        },
+      };
+    },
+  });
+  const first = drive.navigate("https://en.wikipedia.org/wiki/Earth");
+  approvals.approve(approvals.pending()[0]?.id ?? "");
+  expect((await first).message).toBe("Opened en.wikipedia.org in Chrome.");
+
+  const second = drive.navigate("en.wikipedia.org/wiki/Earth");
+  approvals.approve(approvals.pending()[0]?.id ?? "");
+  const again = await second;
+  expect(again.ok).toBe(true);
+  expect(again.message).toBe("Opened en.wikipedia.org in Chrome.");
+  expect(again.message).not.toContain("still loading");
+  expect(connects).toBe(2);
+  expect(drive.pageUrl()).toBe("https://en.wikipedia.org/wiki/Earth");
+}, 12_000);
+
+test("navigate that never reaches a window does not claim the page is loading", async () => {
+  const { drive, approvals } = harness({
+    connect: async () => ({
+      send(method: string) {
+        if (method === "Page.navigate") {
+          return new Promise(() => {});
+        }
+        return Promise.resolve({});
+      },
+      async close() {},
+    }),
+  });
+  const pending = drive.navigate("https://www.bbc.com/news");
+  approvals.approve(approvals.pending()[0]?.id ?? "");
+  const result = await pending;
+  expect(result.ok).toBe(false);
+  expect(result.message).toContain("did not open a window");
+  expect(result.message).not.toContain("still loading");
+  expect(result.message).not.toContain("Opened");
+  expect(drive.hasSession()).toBe(false);
+  expect(drive.pageUrl()).toBe("");
+}, 12_000);
+
+test("still loading is reported only after the window is asked to load", async () => {
+  const sends: string[] = [];
+  const commands: string[][] = [];
+  const { drive, approvals } = harness({
+    platform: "darwin",
+    activate: async (command) => {
+      commands.push([...command]);
+    },
+    connect: async () => ({
+      send(method: string, params?: Record<string, unknown>) {
+        sends.push(method);
+        if (method === "Page.navigate") {
+          expect(params?.url).toBe("https://www.example.com/");
+        }
+        if (method === "Runtime.evaluate") {
+          return new Promise(() => {});
+        }
+        return Promise.resolve({});
+      },
+      async close() {},
+    }),
+  });
+  const pending = drive.navigate("www.example.com");
+  approvals.approve(approvals.pending()[0]?.id ?? "");
+  const result = await pending;
+  expect(result.ok).toBe(true);
+  expect(result.message).toBe(
+    "Opened www.example.com in Chrome. The page is still loading.",
+  );
+  const navigateAt = sends.indexOf("Page.navigate");
+  const frontAt = sends.indexOf("Page.bringToFront");
+  expect(navigateAt).toBeGreaterThanOrEqual(0);
+  expect(frontAt).toBeGreaterThan(navigateAt);
+  expect(commands).toEqual([
+    ["osascript", "-e", 'tell application "Google Chrome" to activate'],
+  ]);
+  expect(drive.hasSession()).toBe(true);
+}, 12_000);
+
+test("linux and windows do not run the macOS Chrome activate command", async () => {
+  for (const platform of ["linux", "win32"] as const) {
+    const commands: string[][] = [];
+    const sends: string[] = [];
+    const { drive, approvals } = harness({
+      platform,
+      activate: async (command) => {
+        commands.push([...command]);
+      },
+      connect: async (page) => {
+        const stand = new StandIn(page);
+        return {
+          async send(method, params) {
+            sends.push(method);
+            return stand.send(method, params);
+          },
+          async close() {
+            await stand.close();
+          },
+        };
+      },
+    });
+    const pending = drive.navigate("https://www.bbc.com/news");
+    approvals.approve(approvals.pending()[0]?.id ?? "");
+    const result = await pending;
+    expect(result.ok).toBe(true);
+    expect(result.message).toBe("Opened www.bbc.com in Chrome.");
+    expect(commands).toEqual([]);
+    expect(sends.indexOf("Page.bringToFront")).toBeGreaterThan(
+      sends.indexOf("Page.navigate"),
+    );
+  }
+});
+
+test("macOS focuses Google Chrome and other platforms do not", () => {
+  expect(chromeFrontCommand("darwin")).toEqual([
+    "osascript",
+    "-e",
+    'tell application "Google Chrome" to activate',
+  ]);
+  expect(chromeFrontCommand("linux")).toBeNull();
+  expect(chromeFrontCommand("win32")).toBeNull();
+});
+
+test("a Chrome that cannot be relaunched is not reported open", async () => {
+  let connects = 0;
+  let open = true;
+  const { drive, approvals } = harness({
+    connect: async (page) => {
+      connects += 1;
+      if (connects > 1) {
+        throw new Error("Chrome did not open a debugging page.");
+      }
+      const stand = new StandIn(page);
+      return {
+        async send(method, params) {
+          if (!open) {
+            throw new Error("Chrome debugging socket closed.");
+          }
+          return stand.send(method, params);
+        },
+        async close() {
+          await stand.close();
+        },
+      };
+    },
+  });
+  const first = drive.navigate("https://www.example.com/");
+  approvals.approve(approvals.pending()[0]?.id ?? "");
+  expect((await first).ok).toBe(true);
+  open = false;
+  const second = drive.navigate("https://www.bbc.com/news");
+  approvals.approve(approvals.pending()[0]?.id ?? "");
+  const again = await second;
+  expect(connects).toBe(2);
+  expect(again.ok).toBe(false);
+  expect(again.message).not.toContain("still loading");
+  expect(again.message).not.toContain("Opened");
+  expect(drive.hasSession()).toBe(false);
+  expect(drive.pageUrl()).toBe("");
+});
+
+async function issuedNavigation(raw: string): Promise<string> {
+  let target = "";
+  const { drive, approvals } = harness({
+    connect: async (page) => {
+      const stand = new StandIn(page);
+      return {
+        async send(method, params) {
+          if (method === "Page.navigate") {
+            target = String(params?.url ?? "");
+          }
+          return stand.send(method, params);
+        },
+        async close() {
+          await stand.close();
+        },
+      };
+    },
+  });
+  const pending = drive.navigate(raw);
+  approvals.approve(approvals.pending()[0]?.id ?? "");
+  const result = await pending;
+  expect(result.ok).toBe(true);
+  return target;
+}
 
 async function waitFor(
   methods: ReturnType<DesktopApp["methods"]>,

@@ -39,6 +39,8 @@ type DriveOptions = {
   connect: (url: string) => Promise<CdpClient>;
   fetchPage: (url: string, signal?: AbortSignal) => Promise<string>;
   now?: () => number;
+  platform?: NodeJS.Platform;
+  activate?: (command: readonly string[]) => Promise<void>;
 };
 
 type Gate = "approved" | "denied" | "cancelled";
@@ -76,6 +78,22 @@ function isCdpTimeout(error: unknown): boolean {
     (error.message.startsWith("Chrome did not answer") ||
       error.message.includes("too large"))
   );
+}
+
+function isStaleConnection(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  return (
+    error.message.startsWith("Chrome did not answer") ||
+    error.message.includes("debugging socket")
+  );
+}
+
+function aborted(): Error {
+  const error = new Error("Stopped.");
+  error.name = "AbortError";
+  return error;
 }
 
 /** Drives the installed Chrome over the remote debugging port. */
@@ -170,22 +188,7 @@ export class BrowserDrive {
       return this.stopped(url);
     }
     try {
-      const client = await this.ensure(url);
-      if (this.halted(signal)) {
-        return this.stopped(url);
-      }
-      let ready = false;
-      try {
-        await this.command(client, "Page.navigate", { url });
-        ready = await this.waitReady(client, signal);
-      } catch (error) {
-        if (this.halted(signal) || isAbort(error)) {
-          return this.stopped(url);
-        }
-        if (!isCdpTimeout(error)) {
-          throw error;
-        }
-      }
+      const ready = await this.openWindow(url, signal);
       if (this.halted(signal)) {
         return this.stopped(url);
       }
@@ -205,6 +208,20 @@ export class BrowserDrive {
         return this.stopped(url);
       }
       const detail = error instanceof Error ? error.message : "Chrome failed.";
+      if (isStaleConnection(error)) {
+        await this.dropClient();
+      }
+      if (!this.client) {
+        this.currentUrl = "";
+      }
+      if (isStaleConnection(error)) {
+        return {
+          ok: false,
+          allowed: true,
+          url,
+          message: `Chrome did not open a window, so ${host} was not opened. ${detail}`,
+        };
+      }
       return {
         ok: false,
         allowed: true,
@@ -474,10 +491,77 @@ export class BrowserDrive {
   private async ensure(url: string): Promise<CdpClient> {
     if (!this.client) {
       this.client = await this.options.connect(url);
-      await this.command(this.client, "Page.enable");
-      await this.command(this.client, "Runtime.enable");
+      try {
+        await this.command(this.client, "Page.enable");
+        await this.command(this.client, "Runtime.enable");
+      } catch (error) {
+        await this.dropClient();
+        throw error;
+      }
     }
     return this.client;
+  }
+
+  private async openWindow(
+    url: string,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    const reused = this.client !== null;
+    try {
+      return await this.issueNavigation(url, signal);
+    } catch (error) {
+      if (this.halted(signal) || isAbort(error) || !isStaleConnection(error)) {
+        throw error;
+      }
+      await this.dropClient();
+      if (!reused) {
+        throw error;
+      }
+    }
+    return await this.issueNavigation(url, signal);
+  }
+
+  private async issueNavigation(
+    url: string,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    const client = await this.ensure(url);
+    if (this.halted(signal)) {
+      throw aborted();
+    }
+    await this.command(client, "Page.navigate", { url });
+    if (this.halted(signal)) {
+      throw aborted();
+    }
+    await this.focusChrome(client);
+    return await this.waitReady(client, signal);
+  }
+
+  private async focusChrome(client: CdpClient): Promise<void> {
+    const command = chromeFrontCommand(
+      this.options.platform ?? process.platform,
+    );
+    if (command) {
+      try {
+        const run = this.options.activate ?? runChromeFront;
+        await run(command);
+      } catch {
+        // The page was already asked to load.
+      }
+    }
+    try {
+      await this.command(client, "Page.bringToFront");
+    } catch {
+      // The page was already asked to load.
+    }
+  }
+
+  private async dropClient(): Promise<void> {
+    try {
+      await this.close();
+    } catch {
+      this.client = null;
+    }
   }
 
   private async evaluate(expression: string): Promise<unknown> {
@@ -604,6 +688,49 @@ export class BrowserDrive {
   private now(): number {
     return this.options.now ? this.options.now() : Date.now();
   }
+}
+
+/** macOS needs an explicit activate; other platforms already raise the window. */
+export function chromeFrontCommand(
+  platform: NodeJS.Platform,
+): readonly string[] | null {
+  if (platform !== "darwin") {
+    return null;
+  }
+  return ["osascript", "-e", 'tell application "Google Chrome" to activate'];
+}
+
+function runChromeFront(command: readonly string[]): Promise<void> {
+  const [bin, ...args] = command;
+  if (!bin) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve, reject) => {
+    const child = spawn(bin, args, { stdio: "ignore" });
+    let settled = false;
+    const finish = (error?: Error) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      child.kill();
+      finish();
+    }, 1_000);
+    child.once("error", (error) => {
+      finish(error);
+    });
+    child.once("close", () => {
+      finish();
+    });
+  });
 }
 
 export function chromeLaunchArgs(userDataDir: string, port: number): string[] {
