@@ -38,6 +38,7 @@
     "allow-memory-settings",
     "allow-memory-save-settings",
     "allow-memory-enable-encryption",
+    "allow-memory-restore-backup",
     "allow-builder-plan",
     "allow-builder-install",
     "allow-open-link"

@@ -444,6 +444,13 @@ export class DesktopApp {
         this.memory.unlock(stringField(params, "key"));
         return JSON.stringify(this.memory.status?.() ?? {});
       },
+      memory_restore: () => {
+        if (!this.memory.restorePlaintext) {
+          throw new Error("Memory has no plaintext backup.");
+        }
+        this.memory.restorePlaintext();
+        return JSON.stringify(this.memory.status?.() ?? {});
+      },
       builder_plan: (params) => JSON.stringify(this.planWidget(params)),
       builder_install: (params) => JSON.stringify(this.installWidget(params)),
     };

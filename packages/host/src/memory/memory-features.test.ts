@@ -518,6 +518,39 @@ test("retain skips page-state and assistant meta, and sweep lists them", async (
   }
 });
 
+test("a missing key can be recovered from the plaintext backup", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pa-restore-"));
+  const sentence = "Maya's dentist is Dr. Patel.";
+  const key = randomKey();
+  const memory = new ChatMemory({
+    dataDir: dir,
+    extractor: createFakeExtractor(() => []),
+  });
+  try {
+    await memory.remember(sentence);
+    memory.encrypt(key);
+  } finally {
+    memory.close();
+  }
+  const locked = new ChatMemory({
+    dataDir: dir,
+    extractor: createFakeExtractor(() => []),
+  });
+  try {
+    expect(() => locked.list()).toThrow(/missing from the macOS Keychain/);
+    expect(locked.status().error).toBe(
+      "Memory is encrypted, but the key is missing from the macOS Keychain or Windows Credential Manager.",
+    );
+    locked.restorePlaintext();
+    expect(locked.status().encryptionEnabled).toBe(false);
+    expect(locked.status().error).toBe("");
+    expect(locked.list().map((fact) => fact.text)).toEqual([sentence]);
+    expect(readFileSync(locked.file).includes(sentence)).toBe(true);
+  } finally {
+    locked.close();
+  }
+});
+
 test("encryption migrates a plaintext bank, keeps a backup, and rejects a bad key", async () => {
   const dir = mkdtempSync(join(tmpdir(), "pa-encrypt-"));
   const sentence = "Maya's distinctive pepper jar sits on the shelf.";
