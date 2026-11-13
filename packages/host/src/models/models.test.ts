@@ -458,7 +458,9 @@ test("think-only and blank tokens stay hidden until visible text", async () => {
   const session = new ChatSession(adapter, settings, new Approvals(() => {}));
   const pending = session.send("hello");
   await Bun.sleep(30);
-  const assistant = session.messages.find((entry) => entry.role === "assistant");
+  const assistant = session.messages.find(
+    (entry) => entry.role === "assistant",
+  );
   expect(assistant?.text ?? "").toBe("");
   release();
   await pending;

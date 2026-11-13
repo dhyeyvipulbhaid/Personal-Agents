@@ -125,14 +125,11 @@ const adapter: ModelAdapter = {
         toolCall: { name: "browser.read", arguments: "{}" },
       };
     }
-    const tool = request.messages.find((message) => message.role === "tool");
-    if (tool?.content.includes("Welcome Ada")) {
+    const heard = request.messages.map((message) => message.content).join("\n");
+    if (heard.includes("Welcome Ada")) {
       return { text: "The page says Welcome Ada." };
     }
-    if (
-      tool?.content.includes("not allowed") ||
-      tool?.content.includes('"allowed":false')
-    ) {
+    if (heard.includes("not allowed") || heard.includes('"allowed":false')) {
       return { text: "That action was not allowed." };
     }
     return { text: "Done." };
