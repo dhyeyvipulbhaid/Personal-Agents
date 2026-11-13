@@ -22,7 +22,7 @@
       "name": "@personal-agents/host",
       "version": "0.0.0",
       "dependencies": {
-        "memory-bank": "github:dhyeyvipulbhaid/memory-bank#0f9aa8e3e0b3707472506b54cefb9f2c47c51e5f",
+        "memory-bank": "github:dhyeyvipulbhaid/memory-bank#ab1595499af6e155e713dd4418bf86bbbcd8c7a0",
       },
     },
   },
@@ -123,7 +123,7 @@
 
     "bun-types": ["bun-types@1.4.4", "", { "dependencies": { "@types/node": "*", "undici-types": "*" } }, "sha512-yjrJh5oGX7mMPKGd19YXyIjmEuj4G4zNC30bs7PM9Az7NQ3ndF3j6hbeRdvJTRQEhJ/FYQwW0a2moweEi2hMxQ=="],
 
-    "memory-bank": ["memory-bank@github:dhyeyvipulbhaid/memory-bank#0f9aa8e", { "bin": { "memory-bank": "./src/cli.ts" } }, "dhyeyvipulbhaid-memory-bank-0f9aa8e", "sha512-xAo51LbpC+ESfeiR61CEYq9yTUo98MIB06CHLCnFOlC1DyURTr24Hxyx6KfXJibMoHNySQaNrQeuOvjg2C5OUQ=="],
+    "memory-bank": ["memory-bank@github:dhyeyvipulbhaid/memory-bank#ab15954", { "bin": { "memory-bank": "./src/cli.ts" } }, "dhyeyvipulbhaid-memory-bank-ab15954", "sha512-LTqnT168b1K9Q5v480UEyEHODK715VyqheIDPKP/zIyAgcCZ2Vc50gHFVUtGLdMw9FuzlS0GZVNXnLU/puHb0w=="],
 
     "playwright": ["playwright@1.65.0", "", { "dependencies": { "playwright-core": "1.65.0" }, "bin": { "playwright": "cli.js" } }, "sha512-F3AMWcR44qMBt4kq+6Kb6mX7bjGXshktKFOPULd7reED6ZJWevjbNRqysP7q+AATE9kdPEZBibex1BYsvpVoeA=="],
 
