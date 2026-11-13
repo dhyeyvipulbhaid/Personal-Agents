@@ -542,14 +542,12 @@ export class DesktopApp {
         runTool: (call, signal) => this.runLocalTool(call, signal),
         forced: direct
           ? {
-              name: "browser.navigate",
+              name: direct.read ? "browser.read" : "browser.navigate",
               arguments: JSON.stringify({ url: direct.url }),
             }
           : undefined,
       });
-      if (direct?.read) {
-        await this.fillPageText(session, direct.url);
-      } else if (asksLivePage(text)) {
+      if (asksLivePage(text) && !direct?.read) {
         const browsed =
           session.chat.messages.filter((message) => message.role === "approval")
             .length > approvalsBefore;
@@ -885,33 +883,6 @@ export class DesktopApp {
     return JSON.stringify(result);
   }
 
-  private async fillPageText(session: Session, url: string): Promise<void> {
-    const assistant = [...session.chat.messages]
-      .reverse()
-      .find((item) => item.role === "assistant");
-    if (!assistant?.text.startsWith("Opened ")) {
-      return;
-    }
-    const raw = await this.runLocalTool({
-      name: "browser.read",
-      arguments: JSON.stringify({ url }),
-    });
-    try {
-      const page = JSON.parse(raw) as { title?: string; text?: string };
-      const text = typeof page.text === "string" ? page.text.trim() : "";
-      if (text.length === 0) {
-        return;
-      }
-      const title =
-        typeof page.title === "string" && page.title.length > 0
-          ? `${page.title}. `
-          : "";
-      assistant.text = `${title}${text}`.slice(0, 2_000);
-    } catch {
-      // The navigate result stays.
-    }
-  }
-
   private markGeneralKnowledge(session: Session): void {
     const assistant = [...session.chat.messages]
       .reverse()
@@ -1213,7 +1184,7 @@ function toolPrompt(): string {
   return [
     "Tools: revenue.read, mail.summary, memory.recall, browser.read, browser.navigate, browser.click, browser.type, browser.screenshot.",
     "Use a browser tool only when the user explicitly asks to look something up, search, open, visit, read a page, or go to a URL.",
-    "If they ask what a website or page currently shows, call browser.navigate and then browser.read. Do not answer that from memory.",
+    "If they ask what a website or page currently shows, call browser.read for that URL. Do not open Chrome and do not answer from memory.",
     "When the user asks to open or visit a site, call browser.navigate again even if an earlier reply already said it was open.",
     "If you did not browse, say you are answering from general knowledge, not from the live page.",
     "Small talk and preference statements do not need the browser.",

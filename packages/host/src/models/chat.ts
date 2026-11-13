@@ -105,6 +105,39 @@ export class ChatSession {
           assistant.text = navigateReply(toolOutput);
           return { text: assistant.text };
         }
+        if (
+          tools?.forced?.name === "browser.read" &&
+          call.name === "browser.read"
+        ) {
+          const read = readForAnswer(toolOutput);
+          if (read.failed) {
+            assistant.text = read.fallback;
+            return { text: read.fallback };
+          }
+          result = await this.adapter.chat(
+            {
+              model,
+              messages: [
+                {
+                  role: "system",
+                  content: `Answer using only the page text. Include this link: ${read.url}. Do not add facts that are not in the text.`,
+                },
+                { role: "user", content: text },
+                {
+                  role: "user",
+                  content: `Page text from ${read.url}:\n${read.pageText}`,
+                },
+              ],
+            },
+            onDelta,
+            controller.signal,
+          );
+          const reply = result.text.trim();
+          assistant.text = reply.includes(read.url)
+            ? reply
+            : `${reply}\n${read.url}`.trim();
+          return { text: assistant.text };
+        }
         messages.push({
           role: "assistant",
           content: result.text,
@@ -266,6 +299,47 @@ function fixedDenial(parsed: ToolPayload): string {
       : `Not allowed: I didn't type into "${field}".`;
   }
   return `Not allowed: I didn't open ${host.length > 0 ? host : "that page"}.`;
+}
+
+function readForAnswer(output: string): {
+  failed: boolean;
+  fallback: string;
+  url: string;
+  pageText: string;
+} {
+  let url = "";
+  try {
+    const parsed = JSON.parse(output) as {
+      url?: string;
+      text?: string;
+      title?: string;
+      opened?: boolean;
+    };
+    url = typeof parsed.url === "string" ? parsed.url : "";
+    const pageText = typeof parsed.text === "string" ? parsed.text.trim() : "";
+    const title = typeof parsed.title === "string" ? parsed.title.trim() : "";
+    if (parsed.opened === false || pageText.length === 0) {
+      return {
+        failed: true,
+        fallback: `I couldn't read the page. ${url || "the page"}`.trim(),
+        url,
+        pageText: "",
+      };
+    }
+    return {
+      failed: false,
+      fallback: "",
+      url,
+      pageText: title.length > 0 ? `${title}\n${pageText}` : pageText,
+    };
+  } catch {
+    return {
+      failed: true,
+      fallback: "I couldn't read the page.",
+      url,
+      pageText: "",
+    };
+  }
 }
 
 function navigateReply(output: string): string {

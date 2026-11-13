@@ -1170,7 +1170,7 @@ function expectBrowseOnlyWhenAsked(content: string | undefined): void {
     "Use a browser tool only when the user explicitly asks to look something up, search, open, visit, read a page, or go to a URL.",
   );
   expect(content).toContain(
-    "If they ask what a website or page currently shows, call browser.navigate and then browser.read. Do not answer that from memory.",
+    "If they ask what a website or page currently shows, call browser.read for that URL. Do not open Chrome and do not answer from memory.",
   );
   expect(content).toContain(
     "When the user asks to open or visit a site, call browser.navigate again even if an earlier reply already said it was open.",
@@ -1316,10 +1316,75 @@ test("opening a site again navigates instead of repeating an earlier description
   }
 });
 
-test("a question about a site's page reads that page instead of inventing it", async () => {
+test("a question about a site's page reads in the background and does not open Chrome", async () => {
   const urls: string[] = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    if (String(input).includes("apple.com")) {
+      return new Response(
+        "<title>Apple</title><main><p>Live store text</p></main>",
+      );
+    }
+    return originalFetch(input);
+  }) as typeof fetch;
   const app = new DesktopApp({
     dataDir: mkdtempSync(join(tmpdir(), "pa-page-question-")),
+    adapter: {
+      async listModels() {
+        return [];
+      },
+      async chat(request) {
+        const packet = request.messages
+          .map((message) => message.content)
+          .join("\n");
+        if (packet.includes("Live store text")) {
+          return {
+            text: "The page says Live store text. https://apple.com/",
+          };
+        }
+        return { text: "It shows iPhones and Apple Watches." };
+      },
+      async structured<T>(): Promise<T> {
+        return {} as T;
+      },
+    },
+    probe: async () => "running",
+    memoryExtractor: createFakeExtractor(() => []),
+    chromePath: "chrome",
+    browserConnect: async () => pageClient(urls),
+  });
+  await app.start();
+  const methods = app.methods();
+  try {
+    const state = await approvedSend(
+      methods,
+      "What is on the apple.com homepage?",
+    );
+    expect(urls).toEqual([]);
+    const reply = state.messages
+      .filter((message) => message.role === "assistant")
+      .at(-1)?.text;
+    expect(reply).toContain("Live store text");
+    expect(reply).toContain("https://apple.com/");
+    expect(reply).not.toContain("iPhone");
+    expect(reply).not.toContain("Opened");
+  } finally {
+    globalThis.fetch = originalFetch;
+    app.close();
+  }
+});
+
+test("a failed background read names the link and does not invent the page", async () => {
+  const urls: string[] = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    if (String(input).includes("apple.com")) {
+      throw new Error("offline");
+    }
+    return originalFetch(input);
+  }) as typeof fetch;
+  const app = new DesktopApp({
+    dataDir: mkdtempSync(join(tmpdir(), "pa-page-fail-")),
     adapter: {
       async listModels() {
         return [];
@@ -1334,7 +1399,7 @@ test("a question about a site's page reads that page instead of inventing it", a
     probe: async () => "running",
     memoryExtractor: createFakeExtractor(() => []),
     chromePath: "chrome",
-    browserConnect: async () => pageClient(urls, "Live store text"),
+    browserConnect: async () => pageClient(urls),
   });
   await app.start();
   const methods = app.methods();
@@ -1343,13 +1408,15 @@ test("a question about a site's page reads that page instead of inventing it", a
       methods,
       "What is on the apple.com homepage?",
     );
-    expect(urls).toEqual(["https://apple.com/"]);
-    const reply = state.messages
-      .filter((message) => message.role === "assistant")
-      .at(-1)?.text;
-    expect(reply).toContain("Live store text");
+    expect(urls).toEqual([]);
+    const reply =
+      state.messages.filter((message) => message.role === "assistant").at(-1)
+        ?.text ?? "";
+    expect(reply).toContain("couldn't read");
+    expect(reply).toContain("apple.com");
     expect(reply).not.toContain("iPhone");
   } finally {
+    globalThis.fetch = originalFetch;
     app.close();
   }
 });

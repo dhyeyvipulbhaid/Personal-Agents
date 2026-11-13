@@ -39,7 +39,8 @@ jobs:
   package:
     name: Package and install check (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    # Includes queue time, so a long macOS runner wait still leaves room to build.
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -116,7 +117,8 @@ jobs:
   e2e:
     name: End-to-end UI flows (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    # Includes time spent waiting for a runner. macOS jobs were cancelled at 20 minutes while still queued.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
