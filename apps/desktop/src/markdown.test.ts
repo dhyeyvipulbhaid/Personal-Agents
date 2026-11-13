@@ -16,3 +16,17 @@ test("markdown renders emphasis and code without raw html", () => {
   expect(html).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
   expect(html.includes("<script>")).toBe(false);
 });
+
+test("a page address is shown as a link named for the site", () => {
+  const html = markdownToHtml(
+    "The page is up.\n\n[https://apple.com/](https://apple.com/)\n\nAlso see https://www.apple.com/iphone.",
+  );
+  expect(html).toContain(
+    '<a href="https://apple.com/" target="_blank" rel="noopener noreferrer">apple.com</a>',
+  );
+  expect(html).toContain(
+    '<a href="https://www.apple.com/iphone" target="_blank" rel="noopener noreferrer">apple.com</a>',
+  );
+  expect(html).not.toContain("[https://apple.com/]");
+  expect(html).not.toContain("<script");
+});

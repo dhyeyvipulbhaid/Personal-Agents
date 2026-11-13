@@ -153,6 +153,29 @@ try {
   if (!statusBox || !answerBox || statusBox.y >= answerBox.y) {
     throw new Error("the approval status rendered below the answer");
   }
+  await page.evaluate(() => {
+    const render = (
+      globalThis as { markdownToHtml?: (source: string) => string }
+    ).markdownToHtml;
+    if (!render) {
+      throw new Error("markdownToHtml is not on the page");
+    }
+    const bubble = document.createElement("div");
+    bubble.className = "bubble assistant";
+    bubble.id = "link-sample";
+    bubble.innerHTML = render(
+      "The page is up.\n\n[https://apple.com/](https://apple.com/)",
+    );
+    document.getElementById("thread")?.append(bubble);
+  });
+  const link = page.locator("#link-sample").getByRole("link", {
+    name: "apple.com",
+  });
+  await link.waitFor();
+  const href = await link.getAttribute("href");
+  if (href !== "https://apple.com/") {
+    throw new Error(`the page link was ${href}`);
+  }
   await page.goto(
     pathToFileURL(join(import.meta.dir, "../apps/desktop/ui/approvals.html"))
       .href,

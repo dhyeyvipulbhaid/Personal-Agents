@@ -44,7 +44,8 @@ fn main() {
             host::memory_remember,
             host::memory_delete,
             host::builder_plan,
-            host::builder_install
+            host::builder_install,
+            open_link
         ])
         .build(tauri::generate_context!())
         .expect("failed to open the Personal Agents window")
@@ -55,6 +56,44 @@ fn main() {
                 }
             }
         });
+}
+
+#[tauri::command]
+fn open_link(url: String) -> Result<(), String> {
+    if !(url.starts_with("https://") || url.starts_with("http://"))
+        || url.chars().any(|ch| ch.is_whitespace() || ch.is_control())
+    {
+        return Err("only a web link can be opened".into());
+    }
+    let status = open_command(&url)
+        .status()
+        .map_err(|err| err.to_string())?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err("the link could not be opened".into())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn open_command(url: &str) -> std::process::Command {
+    let mut command = std::process::Command::new("open");
+    command.arg(url);
+    command
+}
+
+#[cfg(target_os = "windows")]
+fn open_command(url: &str) -> std::process::Command {
+    let mut command = std::process::Command::new("cmd");
+    command.args(["/C", "start", "", url]);
+    command
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn open_command(url: &str) -> std::process::Command {
+    let mut command = std::process::Command::new("xdg-open");
+    command.arg(url);
+    command
 }
 
 fn open_window(app: &mut tauri::App) -> tauri::Result<()> {

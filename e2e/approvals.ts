@@ -77,7 +77,7 @@ try {
   await page.getByRole("button", { name: "Deny" }).waitFor();
   await page.locator("textarea").fill("delete row 2");
   await page.getByRole("button", { name: "Approve" }).click();
-  await page.getByText("Opening example.com…").waitFor();
+  await page.getByText("Reading example.com…").waitFor();
   if ((await page.getByRole("button", { name: "Approve" }).count()) !== 0) {
     throw new Error("approve stayed clickable");
   }
