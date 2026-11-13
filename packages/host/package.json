@@ -2,5 +2,8 @@
   "name": "@personal-agents/host",
   "private": true,
   "version": "0.0.0",
-  "type": "module"
+  "type": "module",
+  "dependencies": {
+    "memory-bank": "github:dhyeyvipulbhaid/memory-bank#5639870198b8250e32bc9e53ddf6cb8ad924ef1d"
+  }
 }

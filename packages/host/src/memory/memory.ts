@@ -6,7 +6,7 @@ export type MemoryFact = {
 
 type StoredFact = MemoryFact & { tokens: string[] };
 
-/** Sample-data memory. Keyword overlap and a small token vector, no encryption. */
+/** Keyword sample and per-task notes. Chat uses memory-bank instead of this store. */
 export class MemoryStore {
   private facts: StoredFact[] = [];
   private nextId = 0;
