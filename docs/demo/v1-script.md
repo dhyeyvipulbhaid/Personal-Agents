@@ -1,6 +1,6 @@
 # 12-minute demo
 
-Run this on device A and again on device B. Save a recording of each run. Use a standard account. Ollama is installed and running. Pull `qwen3:4b` for chat, `qwen3:8b` for the agent, and `qwen2.5-coder:7b` for the builder. The sample revenue file and the sample mailbox are copied into the app data folder on first launch.
+Run this on device A and again on device B. Save a recording of each run. Use a standard account. Ollama is installed and running. Pull `qwen3:8b` for chat and the agent, and `qwen2.5-coder:7b` for the builder. The sample revenue file and the sample mailbox are copied into the app data folder on first launch.
 
 Do not fix the app by hand during the run. If a step fails, stop and note the step.
 

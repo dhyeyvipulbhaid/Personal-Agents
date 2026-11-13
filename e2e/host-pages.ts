@@ -44,12 +44,12 @@ try {
   await open(page, "chat.html");
   await page.locator("#chat-model").waitFor();
   const chat = (await page.locator("body").textContent()) ?? "";
-  if (!chat.includes("qwen3:4b")) {
+  if (!chat.includes("qwen3:8b")) {
     throw new Error(`chat did not show the v1 model\n${chat}`);
   }
   if (
     (chat.includes("not running") || chat.includes("not installed")) &&
-    !chat.includes("ollama pull qwen3:4b")
+    !chat.includes("ollama pull qwen3:8b")
   ) {
     throw new Error(`chat did not explain how to get the model\n${chat}`);
   }

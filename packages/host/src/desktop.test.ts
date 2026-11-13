@@ -52,7 +52,7 @@ test("a fresh host serves revenue, mail, and capabilities without an unavailable
     const ollama = report.checks.find((check) => check.name === "ollama");
     expect(ollama?.status).toBe("blocked");
     expect(ollama?.cause).toBe("port closed");
-    expect(ollama?.advice).toContain("ollama pull qwen3:4b");
+    expect(ollama?.advice).toContain("ollama pull qwen3:8b");
     expect(report.plugins.some((card) => card.name === "Hello")).toBe(true);
     expect(JSON.stringify(report).toLowerCase()).not.toContain("unavailable");
   } finally {
@@ -70,9 +70,9 @@ test("chat names the pull command when the v1 model is not installed", async () 
       messages: { role: string; text: string }[];
       models: { chat: string };
     };
-    expect(state.models.chat).toBe("qwen3:4b");
+    expect(state.models.chat).toBe("qwen3:8b");
     expect(state.messages.map((message) => message.text).join("\n")).toContain(
-      "ollama pull qwen3:4b",
+      "ollama pull qwen3:8b",
     );
     await expect(
       methods.set_models({
@@ -396,7 +396,7 @@ test("a chat request sends tools to ollama and runs the tool call", async () => 
     }
     const body = JSON.parse(raw) as (typeof bodies)[number];
     bodies.push(body);
-    // qwen3:4b calls the tool again when the follow-up still offers tools.
+    // qwen3:8b calls the tool again when the follow-up still offers tools.
     if (body.tools && body.tools.length > 0) {
       return new Response(
         JSON.stringify({
@@ -478,7 +478,7 @@ test("a chat request sends tools to ollama and runs the tool call", async () => 
     expect(reply).toContain("The page title is Example Domain.");
     expect(bodies.at(-1)?.tools).toBeUndefined();
     const offered = bodies[0]?.tools?.map((tool) => tool.function.name) ?? [];
-    expect(bodies[0]?.model).toBe("qwen3:4b");
+    expect(bodies[0]?.model).toBe("qwen3:8b");
     expect(offered).toContain("browser.open");
     expect(offered).toContain("mail.summary");
     expectBrowseOnlyWhenAsked(

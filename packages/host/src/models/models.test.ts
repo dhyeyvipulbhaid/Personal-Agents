@@ -263,11 +263,20 @@ test("the ollama connector returns structured output", async () => {
   ).toEqual({ total: 3 });
 });
 
-test("v1 defaults are qwen3:4b, qwen3:8b, and qwen2.5-coder:7b", () => {
+test("v1 defaults are qwen3:8b for chat and agent, and qwen2.5-coder:7b for the builder", () => {
   const settings = new ModelSettings();
-  expect(settings.get("chat")).toBe("qwen3:4b");
+  expect(settings.get("chat")).toBe("qwen3:8b");
   expect(settings.get("agent")).toBe("qwen3:8b");
   expect(settings.get("builder")).toBe("qwen2.5-coder:7b");
+  settings.set("chat", "qwen3:4b", [
+    {
+      name: "qwen3:4b",
+      tools: true,
+      streaming: true,
+      structured: true,
+    },
+  ]);
+  expect(settings.get("chat")).toBe("qwen3:4b");
 });
 
 test("a missing ollama model tells you the pull command", async () => {

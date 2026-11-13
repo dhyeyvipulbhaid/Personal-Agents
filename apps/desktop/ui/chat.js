@@ -1,5 +1,5 @@
 const defaults = {
-  chat: "qwen3:4b",
+  chat: "qwen3:8b",
   agent: "qwen3:8b",
   builder: "qwen2.5-coder:7b",
 };

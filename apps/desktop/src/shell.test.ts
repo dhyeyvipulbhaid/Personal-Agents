@@ -136,8 +136,9 @@ test("every page uses one shell and does not say unavailable", async () => {
   const chat = await Bun.file(
     new URL("../ui/chat.html", import.meta.url),
   ).text();
-  expect(chat).toContain('value="qwen3:4b"');
+  expect(chat).toContain('id="chat-model"');
   expect(chat).toContain('value="qwen3:8b"');
+  expect(chat).not.toContain('value="qwen3:4b"');
   expect(chat).toContain("qwen2.5-coder:7b");
   expect(chat).not.toContain('value="llama"');
   const styles = await Bun.file(
