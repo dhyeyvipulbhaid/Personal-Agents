@@ -125,6 +125,7 @@ export class BrowserDrive {
   private shots = 0;
   private backgroundUrl = "";
   private abortRead: (() => void) | undefined;
+  private working = false;
 
   constructor(private readonly options: DriveOptions) {}
 
@@ -136,7 +137,7 @@ export class BrowserDrive {
   }
 
   pageUrl(): string {
-    return this.currentUrl || this.backgroundUrl;
+    return this.backgroundUrl || this.currentUrl;
   }
 
   site(): string {
@@ -145,6 +146,14 @@ export class BrowserDrive {
 
   currentStep(): string {
     return this.step;
+  }
+
+  busy(): boolean {
+    return this.working;
+  }
+
+  wantsThumb(): boolean {
+    return this.backgroundUrl.length === 0 && this.client !== null;
   }
 
   lastActionAt(): number {
@@ -156,7 +165,7 @@ export class BrowserDrive {
   }
 
   async captureThumb(): Promise<string> {
-    if (!this.client) {
+    if (!this.client || this.backgroundUrl.length > 0) {
       return "";
     }
     try {
@@ -175,6 +184,7 @@ export class BrowserDrive {
   async halt(): Promise<void> {
     this.abortRead?.();
     this.abortRead = undefined;
+    this.working = false;
     this.backgroundUrl = "";
     this.currentUrl = "";
     this.step = "";
@@ -213,6 +223,7 @@ export class BrowserDrive {
     if (this.halted(signal)) {
       return this.stopped(url);
     }
+    this.working = true;
     try {
       const opened = await this.openWindow(url, signal);
       if (this.halted(signal)) {
@@ -221,6 +232,7 @@ export class BrowserDrive {
       if (!opened) {
         await this.dropClient();
         this.currentUrl = "";
+        this.noteStep("");
         return {
           ok: false,
           allowed: true,
@@ -232,6 +244,7 @@ export class BrowserDrive {
       this.approvedHosts.add(host);
       this.options.session.note(summary);
       this.log(`Navigated to ${host}`);
+      this.noteStep(`done navigate ${host}`);
       return {
         ok: true,
         allowed: true,
@@ -263,6 +276,8 @@ export class BrowserDrive {
         url,
         message: `Chrome did not start, so ${host} was not opened in Safari or any other browser. ${detail}`,
       };
+    } finally {
+      this.working = false;
     }
   }
 
@@ -388,26 +403,38 @@ export class BrowserDrive {
       samePage(url, this.currentUrl) &&
       this.approvedHosts.has(new URL(this.currentUrl).host)
     ) {
-      if (this.halted(signal)) {
-        return this.stopped(this.currentUrl);
-      }
-      const page = (await this.evaluate(readExpression())) as {
-        title?: string;
-        headings?: string[];
-        text?: string;
-      };
+      this.working = true;
       const host = new URL(this.currentUrl).host;
-      this.options.session.note(`read ${host}`);
-      this.log(`Read ${host}`);
-      return {
-        ok: true,
-        allowed: true,
-        opened: true,
-        url: this.currentUrl,
-        title: page.title ?? "",
-        headings: page.headings ?? [],
-        text: page.text ?? "",
-      };
+      this.noteStep(`read ${host}`);
+      let finished = false;
+      try {
+        if (this.halted(signal)) {
+          return this.stopped(this.currentUrl);
+        }
+        const page = (await this.evaluate(readExpression())) as {
+          title?: string;
+          headings?: string[];
+          text?: string;
+        };
+        this.options.session.note(`read ${host}`);
+        this.log(`Read ${host}`);
+        this.noteStep(`done read ${host}`);
+        finished = true;
+        return {
+          ok: true,
+          allowed: true,
+          opened: true,
+          url: this.currentUrl,
+          title: page.title ?? "",
+          headings: page.headings ?? [],
+          text: page.text ?? "",
+        };
+      } finally {
+        this.working = false;
+        if (!finished) {
+          this.noteStep(`done navigate ${host}`);
+        }
+      }
     }
     if (!url) {
       return {
@@ -449,6 +476,7 @@ export class BrowserDrive {
       };
     }
     this.log(`Read ${new URL(url).host}`);
+    this.finishBackground(url);
     return { ok: true, allowed: true, ...loaded };
   }
 
@@ -842,15 +870,26 @@ export class BrowserDrive {
 
   private armBackground(url: string): void {
     this.backgroundUrl = url;
+    this.working = true;
     this.noteStep(`read ${new URL(url).host}`);
+    this.lastAction = this.now();
+  }
+
+  private finishBackground(url: string): void {
+    this.backgroundUrl = url;
+    this.working = false;
+    this.noteStep(`done read ${new URL(url).host}`);
     this.lastAction = this.now();
   }
 
   private clearBackground(): void {
     this.backgroundUrl = "";
+    this.working = false;
     if (this.currentUrl.length === 0) {
       this.step = "";
+      return;
     }
+    this.noteStep(`done navigate ${new URL(this.currentUrl).host}`);
   }
 
   private liveSignal(parent?: AbortSignal): AbortSignal {

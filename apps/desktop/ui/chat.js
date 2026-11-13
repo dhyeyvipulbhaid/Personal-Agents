@@ -286,7 +286,18 @@ function settledLine(text) {
     }
     return field.length > 0 ? `Typed into "${field}"` : "Typed into a field";
   }
-  const open = /(?:visit|navigate to|open)\s+(\S+)/i.exec(body);
+  const visit = /\bvisit\s+(\S+)/i.exec(body);
+  if (visit?.[1]) {
+    const host = visit[1].replace(/[.,]+$/, "");
+    if (denied) {
+      return `Denied: ${host}`;
+    }
+    if (cancelled) {
+      return "Cancelled";
+    }
+    return `Read ${host}`;
+  }
+  const open = /(?:navigate to|open)\s+(\S+)/i.exec(body);
   if (open?.[1]) {
     const host = open[1].replace(/[.,]+$/, "");
     if (denied) {
@@ -327,7 +338,11 @@ function progressLine(summary) {
   if (/\btype\b/i.test(text)) {
     return "Typing…";
   }
-  const open = /(?:visit|navigate to|open)\s+(\S+)/i.exec(text);
+  const visit = /\bvisit\s+(\S+)/i.exec(text);
+  if (visit?.[1]) {
+    return `Reading ${visit[1].replace(/[.,]+$/, "")}…`;
+  }
+  const open = /(?:navigate to|open)\s+(\S+)/i.exec(text);
   if (open?.[1]) {
     return `Opening ${open[1].replace(/[.,]+$/, "")}…`;
   }

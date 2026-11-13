@@ -1253,6 +1253,8 @@ test("a background read shows on the widget without opening Chrome", async () =>
   expect(result.text).toContain("from the background");
   expect(connects).toBe(0);
   expect(drive.pageUrl()).toBe("https://example.com/");
+  expect(drive.currentStep()).toBe("done read example.com");
+  expect(drive.busy()).toBe(false);
   await drive.halt();
   expect(drive.hasSession()).toBe(false);
   expect(drive.site()).toBe("");
