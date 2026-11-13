@@ -13,6 +13,7 @@ import {
   chromeExecutable,
   chromeFrontCommand,
   chromeLaunchArgs,
+  connectChrome,
   type DeadlineTimers,
   openSocket,
   waitForPage,
@@ -24,9 +25,14 @@ type Send = { method: string; params?: Record<string, unknown> };
 class SignInDocument {
   title = "Sign in";
   readyState = "complete";
+  visibilityState = "visible";
   email = "";
   status = "";
   clicked = 0;
+
+  hasFocus(): boolean {
+    return true;
+  }
 
   get body(): ElementLike {
     return main(this);
@@ -535,14 +541,15 @@ test("chat shows one click card and a denial does not click", async () => {
 
 test("stop during a pending click does not click", async () => {
   const page = new SignInDocument();
-  let calls = 0;
   const adapter: ModelAdapter = {
     async listModels() {
       return [];
     },
-    async chat() {
-      calls += 1;
-      if (calls === 1) {
+    async chat(request) {
+      const text =
+        request.messages.filter((message) => message.role === "user").at(-1)
+          ?.content ?? "";
+      if (text.includes("sign in page")) {
         return {
           text: "",
           toolCall: {
@@ -551,10 +558,7 @@ test("stop during a pending click does not click", async () => {
           },
         };
       }
-      if (calls === 2) {
-        return { text: "Opened the sign-in page." };
-      }
-      if (calls === 3) {
+      if (text.includes("click")) {
         return {
           text: "",
           toolCall: {
@@ -698,8 +702,13 @@ test("a hung navigate command finishes while chat stays reachable", async () => 
       messages: { role: string; text: string }[];
     };
     expect(
-      view.messages.some((message) => message.text.includes("still loading")),
+      view.messages.some((message) =>
+        message.text.includes("Could not confirm"),
+      ),
     ).toBe(true);
+    expect(
+      view.messages.some((message) => message.text.includes("iPhone")),
+    ).toBe(false);
   } finally {
     app.close();
   }
@@ -1034,14 +1043,25 @@ test("the first navigate after launch does not treat the startup tab as opened",
           }
           if (method === "Runtime.evaluate") {
             const expression = String(params?.expression ?? "");
-            if (expression.includes("location.href")) {
-              return { result: { value: href } };
+            if (expression.includes("visibilityState")) {
+              return {
+                result: {
+                  value: JSON.stringify({
+                    href,
+                    state: generation > 1 ? "visible" : "hidden",
+                  }),
+                },
+              };
             }
             return { result: { value: "complete" } };
           }
-          if (method === "Target.getTargets") {
+          if (method === "Target.getTargetInfo") {
             return {
-              targetInfos: [{ type: "page", url: href }],
+              targetInfo: {
+                type: "page",
+                url: href,
+                attached: generation > 1,
+              },
             };
           }
           return {};
@@ -1081,14 +1101,25 @@ test("an unverified navigate does not claim the page opened", async () => {
         async send(method: string, params?: Record<string, unknown>) {
           if (method === "Runtime.evaluate") {
             const expression = String(params?.expression ?? "");
-            if (expression.includes("location.href")) {
-              return { result: { value: "about:blank" } };
+            if (expression.includes("visibilityState")) {
+              return {
+                result: {
+                  value: JSON.stringify({
+                    href: "about:blank",
+                    state: "visible",
+                  }),
+                },
+              };
             }
             return { result: { value: "complete" } };
           }
-          if (method === "Target.getTargets") {
+          if (method === "Target.getTargetInfo") {
             return {
-              targetInfos: [{ type: "page", url: "about:blank" }],
+              targetInfo: {
+                type: "page",
+                url: "about:blank",
+                attached: true,
+              },
             };
           }
           return {};
@@ -1112,6 +1143,58 @@ test("an unverified navigate does not claim the page opened", async () => {
   expect(commands.filter((command) => command[0] === "open")).toEqual([
     ["open", "-a", "Google Chrome", "https://apple.com/"],
   ]);
+});
+
+test("a hidden tab on the right host is not reported as opened", async () => {
+  let connects = 0;
+  const { drive, approvals } = harness({
+    platform: "darwin",
+    ...manualTime(),
+    activate: async () => {},
+    connect: async () => {
+      connects += 1;
+      const generation = connects;
+      return {
+        async send(method: string, params?: Record<string, unknown>) {
+          if (method === "Page.navigate" && generation === 1) {
+            return {};
+          }
+          if (method === "Runtime.evaluate") {
+            const expression = String(params?.expression ?? "");
+            if (expression.includes("visibilityState")) {
+              const shown = generation > 1;
+              return {
+                result: {
+                  value: JSON.stringify({
+                    href: "https://www.meta.com/",
+                    state: shown ? "visible" : "hidden",
+                  }),
+                },
+              };
+            }
+          }
+          if (method === "Target.getTargetInfo") {
+            return {
+              targetInfo: {
+                type: "page",
+                url: "https://www.meta.com/",
+                attached: true,
+              },
+            };
+          }
+          return {};
+        },
+        async close() {},
+      };
+    },
+  });
+  const pending = drive.navigate("https://www.meta.com/");
+  approvals.approve(approvals.pending()[0]?.id ?? "");
+  const result = await pending;
+  expect(connects).toBe(2);
+  expect(result.ok).toBe(true);
+  expect(result.message).toBe("Opened www.meta.com in Chrome.");
+  expect(result.text).toBeUndefined();
 });
 
 test("linux and windows do not run the macOS Chrome activate command", async () => {
@@ -1148,6 +1231,45 @@ test("linux and windows do not run the macOS Chrome activate command", async () 
     );
   }
 });
+
+test("a real Chrome tab matches the reported open state", async () => {
+  const chrome = chromeExecutable();
+  if (!chrome) {
+    return;
+  }
+  const dir = mkdtempSync(join(tmpdir(), "pa-real-chrome-"));
+  const box: { client: CdpClient | null } = { client: null };
+  const { drive, approvals } = harness({
+    executable: chrome,
+    connect: async () => {
+      box.client = await connectChrome(chrome, join(dir, "profile"));
+      return box.client;
+    },
+  });
+  const pending = drive.navigate("https://www.apple.com/");
+  approvals.approve(approvals.pending()[0]?.id ?? "");
+  const result = await pending;
+  const live = box.client
+    ? ((await box.client.send("Runtime.evaluate", {
+        expression:
+          "JSON.stringify({href:location.href,state:document.visibilityState})",
+        returnByValue: true,
+      })) as { result?: { value?: string } })
+    : null;
+  const proof = JSON.parse(live?.result?.value ?? "{}") as {
+    href?: string;
+    state?: string;
+  };
+  if (result.ok) {
+    expect(proof.href ?? "").toMatch(/apple\.com/);
+    expect(proof.state).toBe("visible");
+    expect(result.message).toBe("Opened www.apple.com in Chrome.");
+  } else {
+    expect(result.message ?? "").toContain("Could not confirm");
+    expect(result.message ?? "").not.toMatch(/^Opened /);
+  }
+  await drive.close();
+}, 45_000);
 
 test("macOS focuses Google Chrome and other platforms do not", () => {
   expect(chromeFrontCommand("darwin")).toEqual([

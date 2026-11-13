@@ -364,9 +364,9 @@ test("a navigate result without page text does not describe the page", async () 
         message: "Opened apple.com in Chrome.",
       }),
   });
-  expect(seen).toEqual(["Opened apple.com. No page text was returned."]);
-  expect(seen.join("\n")).not.toContain("iPhone");
-  expect(seen.join("\n")).not.toContain("https://apple.com/");
+  expect(seen).toEqual([]);
+  expect(session.messages.at(-1)?.text).toBe("Opened apple.com in Chrome.");
+  expect(session.messages.at(-1)?.text).not.toContain("iPhone");
 });
 
 test("changing the chat model takes effect on the next message", async () => {

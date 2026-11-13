@@ -295,6 +295,9 @@ function settledLine(text) {
     if (cancelled) {
       return "Cancelled";
     }
+    if (/could not confirm|did not open|was not opened/i.test(raw)) {
+      return `Did not open ${host}`;
+    }
     return `Opened ${host}`;
   }
   if (denied) {
