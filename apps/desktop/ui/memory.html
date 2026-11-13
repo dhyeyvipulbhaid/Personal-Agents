@@ -12,18 +12,100 @@
       <header class="page-head">
         <div>
           <h1 class="page-title">Memory</h1>
-          <p class="lede">Facts saved on this machine after a chat reply, or from this page. This version does not encrypt them.</p>
+          <p class="lede">Facts saved on this machine after a chat reply, or from this page. Derived observations cite the facts they came from. Encryption is off until you turn it on in Settings.</p>
         </div>
       </header>
+
+      <section class="card" id="memory-settings">
+        <h2>Settings</h2>
+        <form id="settings-form" class="stack">
+          <label>Embedding model
+            <input id="embedding-model" name="embeddingModel" value="nomic-embed-text" autocomplete="off" />
+          </label>
+          <label class="check-line">
+            <input id="include-observations" name="includeObservations" type="checkbox" checked />
+            Include derived observations in chat
+          </label>
+          <div class="button-row">
+            <button type="submit">Save settings</button>
+          </div>
+          <label class="check-line">
+            <input id="encrypt-memory" type="checkbox" />
+            Encrypt memory at rest
+          </label>
+          <p class="help">The key is generated here and stored in the macOS Keychain or Windows Credential Manager. It is not written into the memory file or the log. Turning this on copies the current file to a backup, then encrypts it.</p>
+          <p id="encryption-status" class="help"></p>
+        </form>
+      </section>
+
       <form id="remember" class="button-row">
         <label>Fact <input id="fact" name="text" /></label>
         <button type="submit">Save fact</button>
       </form>
       <p id="memory-status" class="notice"></p>
-      <ul id="facts" class="plain-list"></ul>
+
+      <section class="card">
+        <h2>Facts</h2>
+        <form id="filters" class="button-row">
+          <label>Search <input id="filter-query" name="query" /></label>
+          <label>Entity <input id="filter-entity" name="entity" /></label>
+          <label>Kind
+            <select id="filter-kind" name="kind">
+              <option value="">Any</option>
+              <option value="world">World</option>
+              <option value="experience">Experience</option>
+            </select>
+          </label>
+          <button type="submit">Filter</button>
+        </form>
+        <ul id="facts" class="plain-list fact-list"></ul>
+        <div class="button-row pager">
+          <button type="button" id="prev-page" class="ghost">Previous</button>
+          <span id="page-label" class="muted"></span>
+          <button type="button" id="next-page" class="ghost">Next</button>
+          <button type="button" id="delete-selected" class="danger">Delete selected</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Derived observations</h2>
+        <p class="help">Reflect reads this agent's facts and writes a few observations. Each one is marked derived and lists the facts it cites. Leave them out of chat from Settings.</p>
+        <form id="reflect-form" class="button-row">
+          <label>Topic <input id="reflect-query" name="query" placeholder="Optional" /></label>
+          <button type="submit">Reflect now</button>
+        </form>
+        <p id="reflect-status" class="notice"></p>
+        <ul id="observations" class="plain-list"></ul>
+      </section>
+
+      <section class="card">
+        <h2>Sweep junk</h2>
+        <p class="help">Preview assistant disclaimers, empty notes, and placeholders. Nothing is deleted until you confirm.</p>
+        <div class="button-row">
+          <button type="button" id="sweep-preview" class="ghost">Preview junk</button>
+          <button type="button" id="sweep-apply" class="danger" hidden>Delete junk</button>
+        </div>
+        <ul id="sweep-list" class="plain-list"></ul>
+      </section>
+
+      <section class="card">
+        <h2>Graph</h2>
+        <div class="button-row">
+          <button type="button" id="graph-toggle" class="ghost">Pause</button>
+          <button type="button" id="graph-refresh" class="ghost">Refresh</button>
+        </div>
+        <div id="edge-filters" class="button-row edge-filters"></div>
+        <div id="graph-legend" class="graph-legend"></div>
+        <div class="graph-stage">
+          <canvas id="memory-graph" width="800" height="480" aria-label="Memory graph"></canvas>
+          <p id="graph-hover" class="graph-hover" hidden></p>
+        </div>
+        <article id="graph-detail" class="graph-detail" hidden></article>
+      </section>
     </template>
     <script src="shortcut.js"></script>
     <script src="shell.js"></script>
+    <script src="memory-graph.js"></script>
     <script src="memory.js"></script>
   </body>
 </html>
