@@ -1170,7 +1170,16 @@ function expectBrowseOnlyWhenAsked(content: string | undefined): void {
     "Use a browser tool only when the user explicitly asks to look something up, search, open, visit, read a page, or go to a URL.",
   );
   expect(content).toContain(
-    "If they only ask a question, answer from memory and your own knowledge, or say you don't know.",
+    "If they ask what a website or page currently shows, call browser.navigate and then browser.read. Do not answer that from memory.",
+  );
+  expect(content).toContain(
+    "When the user asks to open or visit a site, call browser.navigate again even if an earlier reply already said it was open.",
+  );
+  expect(content).toContain(
+    "If you did not browse, say you are answering from general knowledge, not from the live page.",
+  );
+  expect(content).toContain(
+    "Small talk and preference statements do not need the browser.",
   );
   expect(content).toContain(
     "Do not request a page visit just because the answer is missing.",
@@ -1265,4 +1274,182 @@ async function harness(
   });
   await app.start();
   return { app, methods: app.methods(), dir };
+}
+
+test("opening a site again navigates instead of repeating an earlier description", async () => {
+  const urls: string[] = [];
+  const app = new DesktopApp({
+    dataDir: mkdtempSync(join(tmpdir(), "pa-open-again-")),
+    adapter: {
+      async listModels() {
+        return [];
+      },
+      async chat() {
+        return {
+          text: "The Apple website is now open and displays iPhones.",
+        };
+      },
+      async structured<T>(): Promise<T> {
+        return {} as T;
+      },
+    },
+    probe: async () => "running",
+    memoryExtractor: createFakeExtractor(() => []),
+    chromePath: "chrome",
+    browserConnect: async () => pageClient(urls),
+  });
+  await app.start();
+  const methods = app.methods();
+  try {
+    const first = await approvedSend(methods, "open apple.com");
+    const second = await approvedSend(methods, "open apple.com");
+    expect(urls).toEqual(["https://apple.com/", "https://apple.com/"]);
+    const replies = [...first.messages, ...second.messages].filter(
+      (message) => message.role === "assistant",
+    );
+    expect(replies.at(-1)?.text).toBe("Opened apple.com in Chrome.");
+    expect(replies.some((message) => message.text.includes("iPhone"))).toBe(
+      false,
+    );
+  } finally {
+    app.close();
+  }
+});
+
+test("a question about a site's page reads that page instead of inventing it", async () => {
+  const urls: string[] = [];
+  const app = new DesktopApp({
+    dataDir: mkdtempSync(join(tmpdir(), "pa-page-question-")),
+    adapter: {
+      async listModels() {
+        return [];
+      },
+      async chat() {
+        return { text: "It shows iPhones and Apple Watches." };
+      },
+      async structured<T>(): Promise<T> {
+        return {} as T;
+      },
+    },
+    probe: async () => "running",
+    memoryExtractor: createFakeExtractor(() => []),
+    chromePath: "chrome",
+    browserConnect: async () => pageClient(urls, "Live store text"),
+  });
+  await app.start();
+  const methods = app.methods();
+  try {
+    const state = await approvedSend(
+      methods,
+      "What is on the apple.com homepage?",
+    );
+    expect(urls).toEqual(["https://apple.com/"]);
+    const reply = state.messages
+      .filter((message) => message.role === "assistant")
+      .at(-1)?.text;
+    expect(reply).toContain("Live store text");
+    expect(reply).not.toContain("iPhone");
+  } finally {
+    app.close();
+  }
+});
+
+test("a page question without a site names general knowledge, and a preference does not browse", async () => {
+  const urls: string[] = [];
+  const app = new DesktopApp({
+    dataDir: mkdtempSync(join(tmpdir(), "pa-no-browse-")),
+    adapter: {
+      async listModels() {
+        return [];
+      },
+      async chat(request) {
+        const text =
+          request.messages.filter((message) => message.role === "user").at(-1)
+            ?.content ?? "";
+        return {
+          text: text.includes("green tea")
+            ? "Green tea is nice."
+            : "It shows iPhones and Apple Watches.",
+        };
+      },
+      async structured<T>(): Promise<T> {
+        return {} as T;
+      },
+    },
+    probe: async () => "running",
+    memoryExtractor: createFakeExtractor(() => []),
+    chromePath: "chrome",
+    browserConnect: async () => pageClient(urls),
+  });
+  await app.start();
+  const methods = app.methods();
+  try {
+    const tea = JSON.parse(
+      await methods.chat_send({ text: "I like green tea" }),
+    ) as { messages: { role: string; text: string }[] };
+    expect(urls).toEqual([]);
+    expect(JSON.parse(await methods.approvals({}))).toEqual([]);
+    expect(tea.messages.at(-1)?.text).toBe("Green tea is nice.");
+    const page = JSON.parse(
+      await methods.chat_send({ text: "What is on apples main page?" }),
+    ) as { messages: { role: string; text: string }[] };
+    expect(urls).toEqual([]);
+    expect(page.messages.at(-1)?.text).toContain("general knowledge");
+    expect(page.messages.at(-1)?.text).not.toMatch(/^The main page of Apple/);
+  } finally {
+    app.close();
+  }
+});
+
+function pageClient(
+  urls: string[],
+  pageText = "",
+): {
+  send: (method: string, params?: Record<string, unknown>) => Promise<unknown>;
+  close: () => Promise<void>;
+} {
+  return {
+    async send(method: string, params?: Record<string, unknown>) {
+      if (method === "Page.navigate") {
+        urls.push(String(params?.url ?? ""));
+      }
+      if (method === "Runtime.evaluate") {
+        const expression = String(params?.expression ?? "");
+        if (expression.includes("visibilityState")) {
+          return {
+            result: {
+              value: JSON.stringify({
+                href: urls.at(-1) ?? "about:blank",
+                state: "visible",
+              }),
+            },
+          };
+        }
+        if (expression.includes("document.title")) {
+          return {
+            result: {
+              value: { title: "Apple", headings: [], text: pageText },
+            },
+          };
+        }
+      }
+      return {};
+    },
+    async close() {},
+  };
+}
+
+async function approvedSend(
+  methods: ReturnType<DesktopApp["methods"]>,
+  text: string,
+): Promise<{ messages: { role: string; text: string }[] }> {
+  const sent = methods.chat_send({ text });
+  const card = await waitForApproval(methods);
+  if (card.kind !== "approval") {
+    throw new Error("the open did not ask for approval");
+  }
+  await methods.chat_approve({ id: card.id, action: "approve" });
+  return JSON.parse(await sent) as {
+    messages: { role: string; text: string }[];
+  };
 }
