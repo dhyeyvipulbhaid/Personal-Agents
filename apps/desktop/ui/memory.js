@@ -6,7 +6,7 @@ function render(facts) {
   if (!Array.isArray(facts) || facts.length === 0) {
     const item = document.createElement("li");
     item.textContent =
-      "No saved facts yet. Tell chat something like “the revenue total is 220”, or save a fact here.";
+      "No saved facts yet. Save a fact here, or finish a chat reply and this page will list what was kept.";
     list.append(item);
     return;
   }
