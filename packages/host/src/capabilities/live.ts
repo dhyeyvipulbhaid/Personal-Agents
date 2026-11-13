@@ -136,10 +136,10 @@ export function adviceFor(check: Check): string {
     return "";
   }
   if (check.name === "ollama" && check.cause === "port closed") {
-    return "Install Ollama from https://ollama.com/download and start it. Then run `ollama pull qwen3:4b`.";
+    return "Install Ollama from https://ollama.com/download and start it. Then run `ollama pull qwen3:8b`.";
   }
   if (check.name === "ollama" && check.cause === "no models") {
-    return "Run `ollama pull qwen3:4b`, `ollama pull qwen3:8b`, and `ollama pull qwen2.5-coder:7b`.";
+    return "Run `ollama pull qwen3:8b` and `ollama pull qwen2.5-coder:7b`.";
   }
   if (check.cause === "not installed" && check.name.includes("Chrome")) {
     return "Install Google Chrome. Personal Agents will not open Safari or any other default browser.";

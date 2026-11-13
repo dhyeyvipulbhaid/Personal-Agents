@@ -60,7 +60,7 @@ export type RoleName = "chat" | "agent" | "builder";
 /** Per-role model choice. The agent role requires tool support. */
 export class ModelSettings {
   private readonly chosen: Record<RoleName, string> = {
-    chat: "qwen3:4b",
+    chat: "qwen3:8b",
     agent: "qwen3:8b",
     builder: "qwen2.5-coder:7b",
   };

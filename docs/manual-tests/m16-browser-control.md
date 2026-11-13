@@ -1,6 +1,6 @@
 # M16 browser control
 
-On your Mac, with Ollama running and `qwen3:4b` pulled, open Chat.
+On your Mac, with Ollama running and `qwen3:8b` pulled, open Chat.
 
 Chat should not offer a browser visit for a plain question like "Who is Pepper?"; it should only offer one when the user asks to look it up.
 
