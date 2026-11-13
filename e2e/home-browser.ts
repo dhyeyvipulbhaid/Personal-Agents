@@ -56,6 +56,7 @@ const app = new DesktopApp({
   dataDir: dir,
   adapter,
   probe: async () => "running",
+  memoryExtractor: { extract: () => [] },
   chromePath: "chrome",
   browserConnect: async () => ({
     async send(method: string, params?: Record<string, unknown>) {

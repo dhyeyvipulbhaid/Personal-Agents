@@ -2,10 +2,12 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createFakeExtractor, ExtractionFailedError } from "memory-bank";
 import { SAMPLE_REVENUE_CSV } from "./data/demo.ts";
 import { DesktopApp } from "./desktop.ts";
 import { revenueTotal } from "./files/revenue.ts";
 import { rowsFromCsv } from "./files/table.ts";
+import { ChatMemory, type ChatMemoryClient } from "./memory/chat-memory.ts";
 import type { ChatRequest, ModelAdapter } from "./models/adapter.ts";
 import { OllamaConnector } from "./models/ollama.ts";
 import { dispatch } from "./rpc.ts";
@@ -84,31 +86,178 @@ test("chat names the pull command when the v1 model is not installed", async () 
   }
 });
 
-test("a stated fact is recalled in a later chat with its session source", async () => {
-  const seen: ChatRequest[] = [];
-  const { app, methods } = await harness(async (request) => {
-    seen.push(request);
-    return { text: "ok" };
+test("a finished exchange is retained in the background and a failed retain writes nothing", async () => {
+  const seen: string[] = [];
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
   });
+  const memory = new ChatMemory({
+    dataDir: mkdtempSync(join(tmpdir(), "pa-chat-memory-")),
+    extractor: createFakeExtractor(async (input) => {
+      seen.push(input.content);
+      await gate;
+      return [
+        {
+          text: "The revenue total is 220.",
+          kind: "world",
+          occurrenceTime: null,
+          entities: [],
+        },
+      ];
+    }),
+  });
+  const failed = new ChatMemory({
+    dataDir: mkdtempSync(join(tmpdir(), "pa-chat-memory-fail-")),
+    extractor: createFakeExtractor(() => {
+      throw new ExtractionFailedError("the model reply was not usable");
+    }),
+  });
+  const saved = await harness(
+    async () => ({ text: "noted" }),
+    async () => "stopped",
+    memory,
+  );
+  const broken = await harness(
+    async () => ({ text: "still here" }),
+    async () => "stopped",
+    failed,
+  );
   try {
-    await methods.chat_send({ text: "the revenue total is 220" });
-    const facts = JSON.parse(await methods.memory_list({})) as {
-      id: string;
-      text: string;
-      source: string;
-    }[];
-    expect(facts).toEqual([
-      { id: "fact-1", text: "the revenue total is 220", source: "session-1" },
+    const pending = Promise.resolve(
+      saved.methods.chat_send({
+        text: "the revenue total is 220",
+      }),
+    );
+    const winner = await Promise.race([
+      pending.then(() => "sent" as const),
+      Bun.sleep(400).then(() => "blocked" as const),
     ]);
-    await methods.chat_new({});
-    await methods.chat_send({ text: "what is the revenue total?" });
+    expect(winner).toBe("sent");
+    const state = JSON.parse(await pending) as {
+      messages: { role: string; text: string }[];
+    };
+    expect(
+      state.messages.some(
+        (message) => message.role === "assistant" && message.text === "noted",
+      ),
+    ).toBe(true);
+    release();
+    await memory.settle();
+    expect(seen[0]).toContain("User:\nthe revenue total is 220");
+    expect(seen[0]).toContain("Assistant:\nnoted");
+    expect(memory.list().map((fact) => fact.text)).toEqual([
+      "The revenue total is 220.",
+    ]);
+
+    const failedState = JSON.parse(
+      await broken.methods.chat_send({ text: "remember the revenue total" }),
+    ) as { messages: { role: string; text: string }[] };
+    expect(
+      failedState.messages.some(
+        (message) =>
+          message.role === "assistant" && message.text === "still here",
+      ),
+    ).toBe(true);
+    await failed.settle();
+    expect(failed.list()).toEqual([]);
+    expect(await failed.recallFacts("revenue")).toEqual([]);
+  } finally {
+    release();
+    await memory.settle();
+    saved.app.close();
+    broken.app.close();
+  }
+});
+
+test("recalled facts are in the prompt, and a failed recall still replies", async () => {
+  const seen: ChatRequest[] = [];
+  const memory = new ChatMemory({
+    dataDir: mkdtempSync(join(tmpdir(), "pa-chat-recall-")),
+    extractor: createFakeExtractor(() => []),
+  });
+  await memory.remember("Maya prefers morning meetings.");
+  const broken: ChatMemoryClient = {
+    async recallFacts() {
+      throw new Error("recall down");
+    },
+    retainExchange() {
+      return Promise.resolve();
+    },
+    async remember(text) {
+      return { id: "fact-1", text, source: "chat" };
+    },
+    list() {
+      return [];
+    },
+    delete() {},
+    async settle() {},
+    close() {},
+  };
+  const saved = await harness(
+    async (request) => {
+      seen.push(request);
+      return { text: "Morning works." };
+    },
+    async () => "stopped",
+    memory,
+  );
+  const down = await harness(
+    async () => ({ text: "still here" }),
+    async () => "stopped",
+    broken,
+  );
+  try {
+    await saved.methods.chat_send({ text: "When does Maya like to meet?" });
     const context = seen
       .at(-1)
       ?.messages.find((message) => message.role === "system");
-    expect(context?.content).toContain("the revenue total is 220");
-    expect(context?.content).toContain("source session-1");
-    await methods.memory_delete({ id: "fact-1" });
+    expect(context?.content).toContain("Maya prefers morning meetings.");
+    expect(context?.content).toContain("source chat");
+
+    const state = JSON.parse(
+      await down.methods.chat_send({ text: "hello there" }),
+    ) as { messages: { role: string; text: string }[] };
+    expect(state.messages.map((message) => message.text)).toContain(
+      "still here",
+    );
+  } finally {
+    saved.app.close();
+    down.app.close();
+  }
+});
+
+test("saving a fact on the memory page writes through the chat bank", async () => {
+  const seen: ChatRequest[] = [];
+  const memory = new ChatMemory({
+    dataDir: mkdtempSync(join(tmpdir(), "pa-chat-manual-")),
+    extractor: createFakeExtractor(() => []),
+  });
+  const { app, methods } = await harness(
+    async (request) => {
+      seen.push(request);
+      return { text: "Pepper is Maya's dog." };
+    },
+    async () => "stopped",
+    memory,
+  );
+  try {
+    const saved = JSON.parse(
+      await methods.memory_remember({
+        text: "Maya's dog is named Pepper.",
+      }),
+    ) as { id: string; text: string; source: string };
+    expect(saved.text).toBe("Maya's dog is named Pepper.");
+    expect(saved.source).toBe("chat");
+    expect(JSON.parse(await methods.memory_list({}))).toEqual([saved]);
+    await methods.chat_send({ text: "Who is Pepper?" });
+    const context = seen
+      .at(-1)
+      ?.messages.find((message) => message.role === "system");
+    expect(context?.content).toContain("Maya's dog is named Pepper.");
+    await methods.memory_delete({ id: saved.id });
     expect(JSON.parse(await methods.memory_list({}))).toEqual([]);
+    expect(await memory.recallFacts("Pepper")).toEqual([]);
   } finally {
     app.close();
   }
@@ -161,6 +310,7 @@ test("a chat request sends tools to ollama and runs the tool call", async () => 
     dataDir: dir,
     adapter: connector,
     probe: running,
+    memoryExtractor: createFakeExtractor(() => []),
   });
   await app.start();
   const methods = app.methods();
@@ -929,6 +1079,7 @@ async function browserHarness(
     dataDir: mkdtempSync(join(tmpdir(), "pa-browser-chat-")),
     adapter: connector,
     probe: running,
+    memoryExtractor: createFakeExtractor(() => []),
   });
   await app.start();
   const close = app.close.bind(app);
@@ -957,6 +1108,7 @@ async function waitForApproval(
 async function harness(
   chat?: ModelAdapter["chat"],
   probe: () => Promise<"running" | "stopped"> = async () => "stopped",
+  memory?: ChatMemoryClient,
 ): Promise<{
   app: DesktopApp;
   methods: ReturnType<DesktopApp["methods"]>;
@@ -981,6 +1133,8 @@ async function harness(
     adapter,
     probe,
     now: () => Date.parse("2026-11-11T12:00:00.000Z"),
+    memory,
+    memoryExtractor: memory ? undefined : createFakeExtractor(() => []),
   });
   await app.start();
   return { app, methods: app.methods(), dir };
