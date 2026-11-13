@@ -7,6 +7,7 @@ import type {
   ToolCall,
   ToolDefinition,
 } from "./adapter.ts";
+import { stripThink } from "./ollama.ts";
 
 export type TranscriptEntry = {
   role: "user" | "assistant" | "approval" | "memory";
@@ -50,6 +51,7 @@ export class ChatSession {
     this.messages.push(assistant);
     const started = this.clock();
     let sawToken = false;
+    let rawReply = "";
     const controller = new AbortController();
     this.abort = controller;
     const messages: ChatTurn[] = [
@@ -57,11 +59,17 @@ export class ChatSession {
       ...history,
     ];
     const onDelta = (delta: { token: string }) => {
+      rawReply += delta.token;
+      const visible = stripThink(rawReply).trim();
+      if (visible.length === 0) {
+        assistant.text = "";
+        return;
+      }
       if (!sawToken) {
         this.firstTokenMs = this.clock() - started;
         sawToken = true;
       }
-      assistant.text += delta.token;
+      assistant.text = visible;
     };
     try {
       let result = tools?.forced
@@ -311,7 +319,7 @@ function notesForModel(pageText: string): string {
 }
 
 function finishReadAnswer(reply: string, url: string, pageText = ""): string {
-  let text = reply
+  let text = stripThink(reply)
     .trim()
     .replace(/\bopened\b/gi, "read")
     .replace(/\bis open\b/gi, "was read");

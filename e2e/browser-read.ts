@@ -65,7 +65,7 @@ const adapter: ModelAdapter = {
       },
     ];
   },
-  async chat(request) {
+  async chat(request, onDelta) {
     seen.push(request);
     if (request.tools && request.tools.length > 0) {
       return {
@@ -89,13 +89,12 @@ const adapter: ModelAdapter = {
         };
       }
       markNamed();
+      onDelta?.({ token: "" });
+      onDelta?.({ token: "   " });
+      onDelta?.({ token: "<think>planning the summary</think>" });
       await namedGate;
-      const notes =
-        request.messages.find((message) =>
-          message.content.startsWith("Page notes from"),
-        )?.content ?? pageText;
       return {
-        text: `${notes}\nVisit apple.com for more information.`,
+        text: "Apple's homepage highlights products for the home.\nhttps://apple.com/",
       };
     }
     if (pageText.includes("illustrative examples in documents")) {
@@ -263,15 +262,37 @@ try {
   if (!namedBox || !writingBox || namedBox.y >= writingBox.y) {
     throw new Error("Writing answer was not under the read line");
   }
+  await page.getByRole("link", { name: "Home" }).click();
+  await page.getByRole("heading", { name: "Home" }).waitFor();
+  await page.getByRole("link", { name: "Chat" }).click();
+  const returned = page.locator("[data-thinking]", {
+    hasText: "Writing answer…",
+  });
+  await returned.waitFor();
+  const returnedLine = page
+    .locator(".approval-status", { hasText: "Read apple.com" })
+    .last();
+  const returnedBox = await returned.boundingBox();
+  const returnedLineBox = await returnedLine.boundingBox();
+  if (
+    !returnedBox ||
+    !returnedLineBox ||
+    returnedLineBox.y >= returnedBox.y
+  ) {
+    throw new Error("Writing answer was missing after returning to Chat");
+  }
+  if ((await page.getByRole("button", { name: "Send" }).count()) !== 0) {
+    throw new Error("Send was active after returning to Chat");
+  }
   releaseNamed();
   const summary = page.locator(".bubble.assistant").last();
   await summary.getByRole("link", { name: "apple.com" }).waitFor();
   const summaryText = await summary.innerText();
-  if (!summaryText.includes("couldn't summarize")) {
-    throw new Error(`the page was pasted: ${summaryText}`);
+  if (summaryText.includes("planning the summary")) {
+    throw new Error("the thinking text was shown");
   }
-  if (summaryText.includes("Live store text")) {
-    throw new Error("the answer included the raw page");
+  if (!summaryText.includes("highlights products")) {
+    throw new Error(`the summary was ${summaryText}`);
   }
 } finally {
   releaseAnswer();

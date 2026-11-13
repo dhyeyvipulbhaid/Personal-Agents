@@ -432,6 +432,39 @@ test("a streamed reply records the first token and an inline approval clears the
   ).toBe(true);
 });
 
+test("think-only and blank tokens stay hidden until visible text", async () => {
+  let release = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const adapter: ModelAdapter = {
+    async listModels() {
+      return [{ ...withTools, name: "qwen3:4b" }];
+    },
+    async chat(_request, onDelta) {
+      onDelta({ token: "" });
+      onDelta({ token: "   " });
+      onDelta({ token: "<think>planning the summary</think>" });
+      await gate;
+      onDelta({ token: "A short summary." });
+      return { text: "A short summary." };
+    },
+    async structured<T>(): Promise<T> {
+      return {} as T;
+    },
+  };
+  const settings = new ModelSettings();
+  settings.set("chat", "qwen3:4b", [{ ...withTools, name: "qwen3:4b" }]);
+  const session = new ChatSession(adapter, settings, new Approvals(() => {}));
+  const pending = session.send("hello");
+  await Bun.sleep(30);
+  const assistant = session.messages.find((entry) => entry.role === "assistant");
+  expect(assistant?.text ?? "").toBe("");
+  release();
+  await pending;
+  expect(assistant?.text).toBe("A short summary.");
+});
+
 test("unloading the ollama plugin leaves zero registrations", async () => {
   const kernel = new PluginKernel();
   await kernel.load(OLLAMA_PLUGIN_SOURCE);

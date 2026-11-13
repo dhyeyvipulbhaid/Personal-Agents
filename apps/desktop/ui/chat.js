@@ -42,6 +42,7 @@ let round = 0;
 let paint = 0;
 let optimisticText = "";
 let pendingApprovals = [];
+let hostWatch = 0;
 let savedTimer = 0;
 const lockStore = "pa-approval-locks";
 const lockedCards = loadLocks();
@@ -187,18 +188,17 @@ function renderMessages(messages) {
       continue;
     }
     const role = message.role === "user" ? "user" : "assistant";
-    if (
-      role === "assistant" &&
-      String(message.text ?? "").trim().length === 0
-    ) {
+    const visible =
+      role === "assistant" ? visibleAnswer(message.text) : message.text ?? "";
+    if (role === "assistant" && visible.length === 0) {
       continue;
     }
     const bubble = document.createElement("div");
     bubble.className = `bubble ${role}`;
     if (role === "assistant") {
-      bubble.innerHTML = markdownToHtml(message.text ?? "");
+      bubble.innerHTML = markdownToHtml(visible);
     } else {
-      bubble.textContent = message.text ?? "";
+      bubble.textContent = visible;
     }
     thread.append(bubble);
   }
@@ -231,6 +231,14 @@ function currentTurn(messages) {
   return messages.slice(start);
 }
 
+function visibleAnswer(text) {
+  return String(text ?? "")
+    .replace(/<think\b[^>]*>[\s\S]*?<\/think>/gi, "")
+    .replace(/<think\b[^>]*>[\s\S]*$/i, "")
+    .replace(/<\/think>/gi, "")
+    .trim();
+}
+
 function appendThinking(messages) {
   if (!sending) {
     return;
@@ -251,8 +259,7 @@ function appendThinking(messages) {
   }
   const hasAnswer = turn.some(
     (message) =>
-      message.role === "assistant" &&
-      String(message.text ?? "").trim().length > 0,
+      message.role === "assistant" && visibleAnswer(message.text).length > 0,
   );
   if (hasAnswer || (optimisticText.length === 0 && toolAt < 0)) {
     return;
@@ -520,15 +527,21 @@ async function refresh() {
   }
   activeId = state.activeId || activeId;
   pendingApprovals = state.pending ?? [];
+  if (state.streaming || pendingApprovals.length > 0) {
+    sending = true;
+  }
   renderSessions(state);
   renderMessages(state.messages);
-  if (sending || state.streaming || pendingApprovals.length > 0) {
-    if (state.streaming || pendingApprovals.length > 0) {
-      sending = true;
-    }
+  if (sending) {
     setSending(true);
-  } else if (!sending) {
+  } else {
     setSending(false);
+  }
+  window.clearTimeout(hostWatch);
+  if (state.streaming || pendingApprovals.length > 0) {
+    hostWatch = window.setTimeout(() => {
+      refresh().catch(() => {});
+    }, 200);
   }
   if (state.notice) {
     modelNotice.textContent = state.notice;
