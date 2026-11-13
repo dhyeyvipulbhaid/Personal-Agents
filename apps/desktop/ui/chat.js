@@ -41,6 +41,7 @@ let sending = false;
 let round = 0;
 let paint = 0;
 let optimisticText = "";
+let pendingApprovals = [];
 let savedTimer = 0;
 const lockStore = "pa-approval-locks";
 const lockedCards = loadLocks();
@@ -77,6 +78,7 @@ function normalize(parsed) {
       sessions: [{ id: "this", title: "This chat" }],
       activeId: "this",
       streaming: false,
+      pending: [],
       models: null,
       notice: "",
     };
@@ -86,6 +88,7 @@ function normalize(parsed) {
     sessions: Array.isArray(parsed.sessions) ? parsed.sessions : [],
     activeId: typeof parsed.activeId === "string" ? parsed.activeId : "",
     streaming: Boolean(parsed.streaming),
+    pending: Array.isArray(parsed.pending) ? parsed.pending : [],
     models: parsed.models ?? null,
     notice: typeof parsed.notice === "string" ? parsed.notice : "",
   };
@@ -150,6 +153,15 @@ function renderMessages(messages) {
         thread.append(line);
         continue;
       }
+      const waiting = document.createElement("p");
+      waiting.className = "muted";
+      waiting.dataset.waiting = "1";
+      waiting.append("Waiting for approval… ");
+      const review = document.createElement("a");
+      review.href = "approvals.html";
+      review.textContent = "Review";
+      waiting.append(review);
+      card.append(waiting);
       if (lockedCards.has(message.approvalId)) {
         card.dataset.locked = "1";
         const status = document.createElement("p");
@@ -189,6 +201,21 @@ function renderMessages(messages) {
       bubble.textContent = message.text ?? "";
     }
     thread.append(bubble);
+  }
+  for (const item of pendingApprovals) {
+    if (thread.querySelector(`[data-approval-id="${item.id}"]`)) {
+      continue;
+    }
+    const line = document.createElement("p");
+    line.className = "muted";
+    line.dataset.waiting = "1";
+    line.dataset.approvalId = item.id;
+    line.append("Waiting for approval… ");
+    const review = document.createElement("a");
+    review.href = "approvals.html";
+    review.textContent = "Review";
+    line.append(review);
+    thread.append(line);
   }
   appendThinking(messages);
   thread.scrollTop = thread.scrollHeight;
@@ -325,7 +352,10 @@ function settledLine(text) {
     if (cancelled) {
       return "Cancelled";
     }
-    return `Read ${host}`;
+    if (raw.includes("(read)")) {
+      return `Read ${host}`;
+    }
+    return `Reading ${host}…`;
   }
   const open = /(?:navigate to|open)\s+(\S+)/i.exec(body);
   if (open?.[1]) {
@@ -355,7 +385,8 @@ function settled(text) {
   return (
     value.includes("(approved)") ||
     value.includes("(denied)") ||
-    value.includes("(cancelled)")
+    value.includes("(cancelled)") ||
+    value.includes("(read)")
   );
 }
 
@@ -473,9 +504,13 @@ async function refresh() {
     return state;
   }
   activeId = state.activeId || activeId;
+  pendingApprovals = state.pending ?? [];
   renderSessions(state);
   renderMessages(state.messages);
-  if (sending && state.streaming) {
+  if (sending || state.streaming || pendingApprovals.length > 0) {
+    if (state.streaming || pendingApprovals.length > 0) {
+      sending = true;
+    }
     setSending(true);
   } else if (!sending) {
     setSending(false);
@@ -604,12 +639,30 @@ async function submitChat(text) {
   } finally {
     clearInterval(poll);
     if (mine === round) {
-      sending = false;
-      optimisticText = "";
-      setSending(false);
+      await settleTurn(mine);
     }
-    await refresh();
   }
+}
+
+async function settleTurn(mine) {
+  const state = await refresh().catch(() => null);
+  if (mine !== round || !state) {
+    return;
+  }
+  if (state.streaming || state.pending.length > 0) {
+    sending = true;
+    setSending(true);
+    window.setTimeout(() => {
+      if (mine === round) {
+        settleTurn(mine).catch(() => {});
+      }
+    }, 200);
+    return;
+  }
+  sending = false;
+  optimisticText = "";
+  setSending(false);
+  await refresh();
 }
 
 document.getElementById("composer").addEventListener("submit", (event) => {
