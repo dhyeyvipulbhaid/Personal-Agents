@@ -131,6 +131,7 @@ export type ChatMemoryClient = {
   }): MemoryStatus;
   keepPlaintext?(): MemoryStatus;
   disableEncryption?(): MemoryStatus;
+  memoryLock?(): string;
   observations?(): Promise<MemoryFact[]>;
   reflect?(input?: { query?: string }): Promise<MemoryFact[]>;
   reflectIfDue?(
@@ -208,6 +209,7 @@ export class ChatMemory implements ChatMemoryClient {
   private prefs: Prefs;
   private openError = "";
   private keyInUse = "";
+  private observationsTouched = false;
   private readonly pending = new Set<Promise<void>>();
   private closed = false;
   private lastActivityAt = Date.now();
@@ -249,7 +251,10 @@ export class ChatMemory implements ChatMemoryClient {
       return;
     }
     if (this.prefs.encryptionEnabled) {
-      this.openError = MISSING_KEY_MESSAGE;
+      this.openError =
+        this.prefs.encryptionChoice === "passphrase"
+          ? "Enter the memory passphrase to unlock."
+          : MISSING_KEY_MESSAGE;
       return;
     }
     try {
@@ -567,8 +572,19 @@ export class ChatMemory implements ChatMemoryClient {
   }
 
   setIncludeObservations(value: boolean): void {
+    this.observationsTouched = true;
     this.prefs.includeObservations = value;
     this.writePrefs();
+  }
+
+  memoryLock(): string {
+    if (this.closed || this.bank) {
+      return "";
+    }
+    if (!this.prefs.encryptionEnabled) {
+      return "";
+    }
+    return "Memory is locked. Unlock it on the Memory page.";
   }
 
   status(): MemoryStatus {
@@ -689,12 +705,12 @@ export class ChatMemory implements ChatMemoryClient {
   private encryptOnce(key: string): EncryptView {
     const secret = key.trim();
     this.assertKey(secret);
-    this.closeBank();
     const sealed = existsSync(this.file) && bankLooksEncrypted(this.file);
     let backup = `${this.file}.bak`;
     if (!sealed) {
       backup = writeFreshPlaintextBackup(this.file);
     }
+    this.closeBank();
     try {
       const result = encryptBank(this.file, parseEncryptionKey(secret));
       this.open(secret);
@@ -709,10 +725,24 @@ export class ChatMemory implements ChatMemoryClient {
       };
     } catch (error) {
       if (!sealed) {
-        this.restoreBackup(backup);
+        this.replaceWithSnapshot(backup);
       }
       throw this.publicError(error, secret);
     }
+  }
+
+  /** Put a consistent snapshot back. The live WAL sidecars are removed only after the handle is closed. */
+  private replaceWithSnapshot(backup: string): void {
+    this.closeBank();
+    for (const suffix of ["-wal", "-shm"]) {
+      try {
+        unlinkSync(`${this.file}${suffix}`);
+      } catch {
+        // The sidecars are absent when the bank was not using WAL.
+      }
+    }
+    copyFileSync(backup, this.file);
+    this.ensurePlainOpen();
   }
 
   /** Replace the encrypted file with the newest verified plaintext backup. */
@@ -860,21 +890,6 @@ export class ChatMemory implements ChatMemoryClient {
       parseEncryptionKey(secret);
     } catch (error) {
       throw this.publicError(error, secret);
-    }
-  }
-
-  private restoreBackup(backup: string): void {
-    try {
-      copyFileSync(backup, this.file);
-    } catch (error) {
-      this.note("memory backup restore failed", error);
-    }
-    try {
-      this.open(undefined);
-      this.keyInUse = "";
-    } catch (error) {
-      this.openError = this.publicError(error).message;
-      this.bank = null;
     }
   }
 
@@ -1038,10 +1053,28 @@ export class ChatMemory implements ChatMemoryClient {
   }
 
   private writePrefs(): void {
+    let onDisk = this.prefs.includeObservations;
+    let existing: Record<string, unknown> = {};
+    try {
+      existing = JSON.parse(readFileSync(this.prefsPath, "utf8")) as Record<
+        string,
+        unknown
+      >;
+      if (typeof existing.includeObservations === "boolean") {
+        onDisk = existing.includeObservations;
+      }
+    } catch {
+      existing = {};
+    }
+    const includeObservations = this.observationsTouched
+      ? this.prefs.includeObservations
+      : onDisk;
+    this.prefs.includeObservations = includeObservations;
     const body = JSON.stringify(
       {
+        ...existing,
         embeddingModel: this.prefs.embeddingModel,
-        includeObservations: this.prefs.includeObservations,
+        includeObservations,
         encryptionEnabled: this.prefs.encryptionEnabled,
         encryptionChoice: this.prefs.encryptionChoice,
         encryptionPrompt: this.prefs.encryptionPrompt,
@@ -1236,57 +1269,39 @@ function readPrefs(file: string): Prefs {
 }
 
 function writeFreshPlaintextBackup(file: string): string {
-  checkpointWal(file);
-  const expected = factTexts(file);
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const stamped = `${file}.pre-encrypt-${stamp}.bak`;
   const stable = `${file}.bak`;
-  copyFileSync(file, stamped);
-  copyFileSync(file, stable);
+  const db = new Database(file);
+  db.exec("PRAGMA busy_timeout = 5000;");
   try {
+    const expected = (
+      db.query("SELECT text FROM facts").all() as { text: string | null }[]
+    )
+      .map((row) => row.text ?? "")
+      .sort();
+    vacuumInto(db, stamped);
+    vacuumInto(db, stable);
     verifyPlaintextBackup(stamped, expected);
     verifyPlaintextBackup(stable, expected);
-  } catch (error) {
-    try {
-      unlinkSync(stamped);
-    } catch {
-      // The failed copy is removed when it exists.
-    }
-    throw error;
+  } finally {
+    db.close();
   }
   pruneStampedBackups(file, 2);
   return stable;
 }
 
-function checkpointWal(file: string): void {
-  if (!existsSync(file)) {
-    return;
-  }
-  const db = new Database(file);
+function vacuumInto(db: Database, dest: string): void {
   try {
-    db.exec("PRAGMA wal_checkpoint(TRUNCATE);");
-  } finally {
-    db.close();
+    unlinkSync(dest);
+  } catch {
+    // A previous backup file is replaced only after it is removed.
   }
-  for (const suffix of ["-wal", "-shm"]) {
-    try {
-      unlinkSync(`${file}${suffix}`);
-    } catch {
-      // WAL sidecars are absent after a truncate checkpoint.
-    }
-  }
+  db.exec(`VACUUM INTO ${sqlString(dest)}`);
 }
 
-function factTexts(file: string): string[] {
-  const db = new Database(file, { readonly: true });
-  try {
-    const rows = db.query("SELECT text FROM facts").all() as {
-      text: string | null;
-    }[];
-    return rows.map((row) => row.text ?? "").sort();
-  } finally {
-    db.close();
-  }
+function sqlString(value: string): string {
+  return `'${value.replaceAll("'", "''")}'`;
 }
 
 function verifyPlaintextBackup(file: string, expected: string[]): void {

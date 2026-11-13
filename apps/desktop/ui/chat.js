@@ -82,6 +82,7 @@ function normalize(parsed) {
       pending: [],
       models: null,
       notice: "",
+      memoryLock: "",
     };
   }
   return {
@@ -92,6 +93,7 @@ function normalize(parsed) {
     pending: Array.isArray(parsed.pending) ? parsed.pending : [],
     models: parsed.models ?? null,
     notice: typeof parsed.notice === "string" ? parsed.notice : "",
+    memoryLock: typeof parsed.memoryLock === "string" ? parsed.memoryLock : "",
   };
 }
 
@@ -545,6 +547,10 @@ async function refresh() {
   }
   if (state.notice) {
     modelNotice.textContent = state.notice;
+  }
+  if (state.memoryLock) {
+    modelError.textContent = state.memoryLock;
+    modelError.className = "notice";
   }
   if (state.models) {
     for (const role of Object.keys(selects)) {

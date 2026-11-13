@@ -1138,6 +1138,7 @@ export class DesktopApp {
         .map((item) => ({ id: item.id, summary: item.summary })),
       models: this.selected(),
       notice: this.notice,
+      memoryLock: this.memory.memoryLock?.() ?? "",
     };
   }
 
