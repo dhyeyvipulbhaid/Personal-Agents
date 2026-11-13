@@ -2,6 +2,11 @@ export type MemoryFact = {
   id: string;
   text: string;
   source: string;
+  /** Set when reflect synthesized this row from other facts. */
+  derived?: boolean;
+  sourceFactIds?: string[];
+  cited?: { id: string; text: string }[];
+  kind?: string;
 };
 
 type StoredFact = MemoryFact & { tokens: string[] };

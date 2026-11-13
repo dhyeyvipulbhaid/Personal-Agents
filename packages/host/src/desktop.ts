@@ -39,6 +39,7 @@ import {
   CHAT_AGENT_ID,
   ChatMemory,
   type ChatMemoryClient,
+  type EmbedText,
 } from "./memory/chat-memory.ts";
 import type { MemoryFact } from "./memory/memory.ts";
 import {
@@ -243,15 +244,18 @@ export class DesktopApp {
         agentId: CHAT_AGENT_ID,
         extractor: options.memoryExtractor,
         model: () => this.settings.get("agent"),
+        embed: embedFrom(this.adapter),
       });
   }
 
   async start(): Promise<void> {
     await this.kernel.load(HELLO_PLUGIN_SOURCE);
     await this.kernel.load(OLLAMA_PLUGIN_SOURCE);
+    this.memory.startIdleReflect?.();
   }
 
   close(): void {
+    this.memory.stopIdleReflect?.();
     this.preview.stop();
     this.kernel.close();
     void this.drive.close();
@@ -337,6 +341,17 @@ export class DesktopApp {
       mail_draft: async (params) =>
         JSON.stringify(await this.draftReply(params)),
       memory_list: () => JSON.stringify(this.memory.list()),
+      memory_page: (params) =>
+        JSON.stringify(
+          this.memory.listPage
+            ? this.memory.listPage(pageQuery(params))
+            : {
+                facts: this.memory.list(),
+                total: this.memory.list().length,
+                offset: 0,
+                limit: this.memory.list().length,
+              },
+        ),
       memory_remember: async (params) => {
         const text = stringField(params, "text").trim();
         if (text.length === 0) {
@@ -344,9 +359,90 @@ export class DesktopApp {
         }
         return JSON.stringify(await this.memory.remember(text));
       },
+      memory_update: async (params) => {
+        if (!this.memory.update) {
+          throw new Error("Memory cannot edit facts.");
+        }
+        const text = stringField(params, "text").trim();
+        if (text.length === 0) {
+          throw new Error("Write a fact before saving it.");
+        }
+        return JSON.stringify(
+          await this.memory.update(stringField(params, "id"), text),
+        );
+      },
       memory_delete: (params) => {
         this.memory.delete(stringField(params, "id"));
         return JSON.stringify(this.memory.list());
+      },
+      memory_delete_many: (params) => {
+        if (!this.memory.deleteMany) {
+          throw new Error("Memory cannot delete those facts.");
+        }
+        const removed = this.memory.deleteMany(stringList(params, "ids"));
+        return JSON.stringify({
+          ...removed,
+          facts: this.memory.list(),
+        });
+      },
+      memory_sweep: (params) => {
+        if (!this.memory.sweep) {
+          throw new Error("Memory cannot sweep junk.");
+        }
+        const record = asRecord(params);
+        const dryRun = record.dryRun !== false && record.dry_run !== false;
+        return JSON.stringify(this.memory.sweep(dryRun));
+      },
+      memory_graph: async () => {
+        if (!this.memory.graph) {
+          throw new Error("Memory has no graph.");
+        }
+        return JSON.stringify(await this.memory.graph());
+      },
+      memory_observations: async () =>
+        JSON.stringify(
+          this.memory.observations ? await this.memory.observations() : [],
+        ),
+      memory_reflect: async (params) => {
+        if (!this.memory.reflect) {
+          throw new Error("Memory cannot reflect.");
+        }
+        const query = stringField(params, "query");
+        return JSON.stringify(
+          await this.memory.reflect(query.length > 0 ? { query } : {}),
+        );
+      },
+      memory_settings: () =>
+        JSON.stringify(
+          this.memory.status?.() ?? {
+            embeddingModel: "",
+            includeObservations: true,
+            encryptionEnabled: false,
+            error: "",
+          },
+        ),
+      memory_save_settings: (params) => {
+        const record = asRecord(params);
+        if (typeof record.embeddingModel === "string") {
+          this.memory.setEmbeddingModel?.(record.embeddingModel);
+        }
+        if (typeof record.includeObservations === "boolean") {
+          this.memory.setIncludeObservations?.(record.includeObservations);
+        }
+        return JSON.stringify(this.memory.status?.() ?? {});
+      },
+      memory_encrypt: (params) => {
+        if (!this.memory.encrypt) {
+          throw new Error("Memory encryption is not available.");
+        }
+        return JSON.stringify(this.memory.encrypt(stringField(params, "key")));
+      },
+      memory_unlock: (params) => {
+        if (!this.memory.unlock) {
+          throw new Error("Memory encryption is not available.");
+        }
+        this.memory.unlock(stringField(params, "key"));
+        return JSON.stringify(this.memory.status?.() ?? {});
       },
       builder_plan: (params) => JSON.stringify(this.planWidget(params)),
       builder_install: (params) => JSON.stringify(this.installWidget(params)),
@@ -514,6 +610,7 @@ export class DesktopApp {
 
   private async sendChat(params: unknown): Promise<string> {
     const text = stringField(params, "text");
+    this.memory.noteActivity?.();
     const requested = stringField(params, "sessionId", "session_id");
     const session = requested
       ? (this.sessions.find((item) => item.id === requested) ?? this.ensure())
@@ -531,9 +628,7 @@ export class DesktopApp {
     const approvalsBefore = session.chat.messages.filter(
       (message) => message.role === "approval",
     ).length;
-    const remembered = recalled
-      .map((fact) => `${fact.text} (source ${fact.source})`)
-      .join("\n");
+    const remembered = recalled.map(memoryLine).join("\n");
     const context = [toolPrompt(), remembered]
       .filter((part) => part.length > 0)
       .join("\n");
@@ -1441,6 +1536,62 @@ export function modelNotInstalledMessage(model: string): string {
 
 export function ollamaDownMessage(model: string): string {
   return `Ollama is not running at 127.0.0.1:11434. Install it from https://ollama.com/download, then run \`ollama pull ${model}\`.`;
+}
+
+function memoryLine(fact: MemoryFact): string {
+  if (fact.derived) {
+    return `${fact.text} (derived, source ${fact.source})`;
+  }
+  return `${fact.text} (source ${fact.source})`;
+}
+
+function embedFrom(adapter: ModelAdapter): EmbedText | undefined {
+  const candidate = adapter as ModelAdapter & {
+    embed?: EmbedText;
+  };
+  const embed = candidate.embed;
+  if (typeof embed !== "function") {
+    return undefined;
+  }
+  return (model, text) => embed.call(candidate, model, text);
+}
+
+function pageQuery(params: unknown): {
+  limit?: number;
+  offset?: number;
+  kind?: string;
+  entity?: string;
+  query?: string;
+} {
+  const record = asRecord(params);
+  return {
+    limit: numberField(record.limit),
+    offset: numberField(record.offset),
+    kind: typeof record.kind === "string" ? record.kind : "",
+    entity: typeof record.entity === "string" ? record.entity : "",
+    query: typeof record.query === "string" ? record.query : "",
+  };
+}
+
+function numberField(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string" && value.trim().length > 0) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return undefined;
+}
+
+function stringList(params: unknown, key: string): string[] {
+  const value = asRecord(params)[key];
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.filter((item): item is string => typeof item === "string");
 }
 
 function stringField(value: unknown, ...keys: string[]): string {
