@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -513,6 +513,28 @@ test("retain skips page-state and assistant meta, and sweep lists them", async (
         .map((fact) => fact.text)
         .sort(),
     ).toEqual(["My dentist is Dr. Patel.", "The user likes green tea."]);
+  } finally {
+    memory.close();
+  }
+});
+
+test("encrypt writes one backup and a later call does not write another", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pa-one-backup-"));
+  const key = randomKey();
+  const memory = new ChatMemory({
+    dataDir: dir,
+    extractor: createFakeExtractor(() => []),
+  });
+  try {
+    await memory.remember("My dentist is Dr. Patel.");
+    memory.encrypt(key);
+    memory.encrypt(key);
+    memory.encrypt(key);
+    const backups = readdirSync(dir).filter((name) => name.endsWith(".bak"));
+    expect(backups).toEqual(["memory-bank.sqlite.bak"]);
+    expect(memory.list().map((fact) => fact.text)).toEqual([
+      "My dentist is Dr. Patel.",
+    ]);
   } finally {
     memory.close();
   }

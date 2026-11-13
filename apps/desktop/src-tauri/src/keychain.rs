@@ -104,6 +104,7 @@ fn keychain_error(err: impl std::fmt::Display) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
 
     struct MemoryStore(Mutex<Option<String>>);
@@ -162,5 +163,34 @@ mod tests {
         let err = store_and_verify(&ForgetfulStore).expect_err("verify");
         assert!(err.contains("Memory was not encrypted"));
         assert!(!err.contains("AAAA"));
+    }
+
+    struct CountingStore {
+        reads: AtomicUsize,
+        writes: AtomicUsize,
+    }
+
+    impl SecretStore for CountingStore {
+        fn get(&self) -> Result<Option<String>, String> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            Ok(None)
+        }
+
+        fn set(&self, _secret: &str) -> Result<(), String> {
+            self.writes.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_failing_key_store_is_not_retried() {
+        let store = CountingStore {
+            reads: AtomicUsize::new(0),
+            writes: AtomicUsize::new(0),
+        };
+        let err = store_and_verify(&store).expect_err("verify");
+        assert!(err.contains("Memory was not encrypted"));
+        assert_eq!(store.reads.load(Ordering::SeqCst), 2);
+        assert_eq!(store.writes.load(Ordering::SeqCst), 1);
     }
 }
