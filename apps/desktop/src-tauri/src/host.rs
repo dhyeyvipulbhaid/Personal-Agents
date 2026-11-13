@@ -141,6 +141,32 @@ impl HostHandle {
         self.inner.ensure_unlocked()
     }
 
+    /// Wait until the host answers, then encrypt once. A failed encrypt is not retried.
+    fn encrypt_once(&self, key: &str) -> Result<String, String> {
+        let deadline = Instant::now() + READY_TIMEOUT;
+        let mut last = "agent host is not running".to_string();
+        while Instant::now() < deadline {
+            match self.inner.call("version") {
+                Ok(_) => {
+                    return self
+                        .inner
+                        .call_params_timeout(
+                            "memory_encrypt",
+                            serde_json::json!({ "key": key }),
+                            CALL_TIMEOUT,
+                        )
+                        .map_err(|err| crate::keychain::redact(&err, key));
+                }
+                Err(err) if err == "agent host is not running" => {
+                    last = err;
+                    thread::sleep(Duration::from_millis(50));
+                }
+                Err(err) => return Err(crate::keychain::redact(&err, key)),
+            }
+        }
+        Err(last)
+    }
+
     fn call_when_ready(&self, method: &str) -> Result<String, String> {
         let deadline = Instant::now() + READY_TIMEOUT;
         let mut last = "agent host is not running".to_string();
@@ -574,17 +600,9 @@ pub async fn memory_enable_encryption(
     let key = crate::keychain::store_and_verify(&crate::keychain::OsSecretStore)?;
     let inner = host.inner().clone();
     let secret = key;
-    tauri::async_runtime::spawn_blocking(move || {
-        inner
-            .call_params_when_ready_timeout(
-                "memory_encrypt",
-                serde_json::json!({ "key": secret.clone() }),
-                CALL_TIMEOUT,
-            )
-            .map_err(|err| crate::keychain::redact(&err, &secret))
-    })
-    .await
-    .map_err(|err| err.to_string())?
+    tauri::async_runtime::spawn_blocking(move || inner.encrypt_once(&secret))
+        .await
+        .map_err(|err| err.to_string())?
 }
 
 #[tauri::command]

@@ -517,14 +517,33 @@ document.getElementById("settings-form").addEventListener("submit", (event) => {
     .catch((error) => showMemoryError(error));
 });
 
+let encryptionBusy = false;
+let ignoreEncryptChange = false;
+
+function setEncryptChecked(box, checked) {
+  ignoreEncryptChange = true;
+  box.checked = checked;
+  ignoreEncryptChange = false;
+}
+
 document
   .getElementById("encrypt-memory")
   .addEventListener("change", (event) => {
     const box = event.currentTarget;
-    if (!box.checked) {
-      box.checked = box.disabled;
+    if (ignoreEncryptChange) {
       return;
     }
+    if (encryptionBusy) {
+      setEncryptChecked(box, true);
+      return;
+    }
+    if (!box.checked) {
+      if (box.disabled) {
+        setEncryptChecked(box, true);
+      }
+      return;
+    }
+    encryptionBusy = true;
     encryptionStatus.textContent = "Encrypting the memory file…";
     window.pa
       .invoke("memory_enable_encryption")
@@ -535,13 +554,16 @@ document
         return showFacts();
       })
       .catch((error) => {
-        box.checked = false;
+        setEncryptChecked(box, false);
         const detail = messageOf(error);
         if (isKeyError(detail)) {
           noteKeyProblem(detail);
           return;
         }
         encryptionStatus.textContent = detail;
+      })
+      .finally(() => {
+        encryptionBusy = false;
       });
   });
 

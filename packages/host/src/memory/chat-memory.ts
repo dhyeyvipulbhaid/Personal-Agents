@@ -196,6 +196,7 @@ export class ChatMemory implements ChatMemoryClient {
   private lastActivityAt = Date.now();
   private lastReflectAt = 0;
   private timer: ReturnType<typeof setInterval> | null = null;
+  private migrating = false;
 
   constructor(options: ChatMemoryOptions) {
     const agentId = options.agentId?.trim() || CHAT_AGENT_ID;
@@ -545,16 +546,32 @@ export class ChatMemory implements ChatMemoryClient {
   }
 
   encrypt(key: string): EncryptView {
+    if (this.migrating) {
+      throw new Error("Memory encryption is already running.");
+    }
+    this.migrating = true;
+    try {
+      return this.encryptOnce(key);
+    } finally {
+      this.migrating = false;
+    }
+  }
+
+  private encryptOnce(key: string): EncryptView {
     const secret = key.trim();
     this.assertKey(secret);
+    const backup = `${this.file}.bak`;
+    const hadBackup = existsSync(backup);
     this.closeBank();
-    const backup = this.backupPath();
-    copyFileSync(this.file, backup);
+    if (!hadBackup) {
+      copyFileSync(this.file, backup);
+    }
     try {
       const result = encryptBank(this.file, parseEncryptionKey(secret));
       this.open(secret);
       this.keyInUse = secret;
       this.prefs.encryptionEnabled = true;
+      this.openError = "";
       this.writePrefs();
       return {
         backup,
@@ -562,7 +579,9 @@ export class ChatMemory implements ChatMemoryClient {
         alreadyEncrypted: result.alreadyEncrypted,
       };
     } catch (error) {
-      this.restoreBackup(backup);
+      if (!hadBackup) {
+        this.restoreBackup(backup);
+      }
       throw this.publicError(error, secret);
     }
   }
@@ -695,15 +714,6 @@ export class ChatMemory implements ChatMemoryClient {
     } catch (error) {
       throw this.publicError(error, secret);
     }
-  }
-
-  private backupPath(): string {
-    const plain = `${this.file}.bak`;
-    if (!existsSync(plain)) {
-      return plain;
-    }
-    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-    return `${this.file}.${stamp}.bak`;
   }
 
   private restoreBackup(backup: string): void {
