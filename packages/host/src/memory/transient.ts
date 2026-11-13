@@ -27,7 +27,12 @@ function isPageState(text: string): boolean {
   if (!namesAPage(lower)) {
     return false;
   }
-  return isOpenPage(lower) || describesPageContents(lower);
+  return (
+    isOpenPage(lower) ||
+    describesPageContents(lower) ||
+    isPageLoading(lower) ||
+    isPageVisit(lower)
+  );
 }
 
 function namesAPage(lower: string): boolean {
@@ -52,6 +57,14 @@ function describesPageContents(lower: string): boolean {
   );
 }
 
+function isPageLoading(lower: string): boolean {
+  return /\b(?:still\s+)?loading\b/.test(lower);
+}
+
+function isPageVisit(lower: string): boolean {
+  return /\b(?:can be visited|visited at|visit(?:ed|ing)?)\b/.test(lower);
+}
+
 function isNavigationState(lower: string): boolean {
   if (/\b(?:attempted|tried) to navigate\b/.test(lower)) {
     return true;
@@ -64,10 +77,5 @@ function isNavigationState(lower: string): boolean {
 }
 
 function isAssistantMeta(text: string): boolean {
-  if (!/^(?:the |this )?(?:assistant|language model|model|ai)\b/i.test(text)) {
-    return false;
-  }
-  return /\b(?:said|says|responded|replied|told|explained|answered|fetched|fetch|did|didn't|did not|acknowledged|confirmed|noted|unable)\b/i.test(
-    text,
-  );
+  return /^(?:the |this )?(?:assistant|language model|model|ai)\b/i.test(text);
 }

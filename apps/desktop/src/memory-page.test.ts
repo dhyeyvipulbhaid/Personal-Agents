@@ -16,4 +16,13 @@ test("reflect now reloads observations, clears the status, and surfaces errors",
     new URL("../ui/memory.html", import.meta.url),
   ).text();
   expect(page).toContain('id="graph-status"');
+  expect(page.indexOf("<h2>Graph</h2>")).toBeLessThan(
+    page.indexOf('id="memory-settings"'),
+  );
+  expect(page.indexOf('id="graph-detail"')).toBeGreaterThan(
+    page.indexOf('id="memory-graph"'),
+  );
+  expect(page.indexOf('id="graph-detail"')).toBeLessThan(
+    page.indexOf('id="memory-settings"'),
+  );
 });

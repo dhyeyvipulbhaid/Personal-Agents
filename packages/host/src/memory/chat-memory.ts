@@ -377,7 +377,7 @@ export class ChatMemory implements ChatMemoryClient {
       junkIds.add(fact.id);
       return [{ id: fact.id, text: fact.text, reason }];
     });
-    const derived = this.observationsFromJunk(junkIds, seen);
+    const derived = this.junkObservations(junkIds, seen);
     const candidates = [
       ...library.candidates.map((item) => ({
         id: item.id,
@@ -387,12 +387,19 @@ export class ChatMemory implements ChatMemoryClient {
       ...extraFacts,
       ...derived,
     ];
+    if (dryRun) {
+      return { dryRun: true, candidates, deleted: 0 };
+    }
     if (
-      dryRun ||
-      (library.candidates.length === 0 && extraFacts.length === 0)
+      library.candidates.length === 0 &&
+      extraFacts.length === 0 &&
+      derived.length === 0
     ) {
       return { dryRun: true, candidates, deleted: 0 };
     }
+    const removedObservations = this.deleteObservations(
+      derived.map((item) => item.id),
+    );
     const applied = bank.sweepJunk({ dryRun: false });
     let extraDeleted = 0;
     if (extraFacts.length > 0) {
@@ -402,7 +409,7 @@ export class ChatMemory implements ChatMemoryClient {
     return {
       dryRun: false,
       candidates,
-      deleted: applied.deleted + extraDeleted,
+      deleted: applied.deleted + extraDeleted + removedObservations,
     };
   }
 
@@ -764,44 +771,92 @@ export class ChatMemory implements ChatMemoryClient {
     }
   }
 
-  /** Observations that cite only junk. Deleting those facts removes them. */
-  private observationsFromJunk(
+  /**
+   * Observations for this agent, whatever scope_key they were saved under.
+   * A reflect query is stored with empty fields still joined by newlines.
+   */
+  private storedObservations(): { id: string; text: string }[] {
+    const db = new Database(this.file, { readonly: true });
+    try {
+      return db
+        .query(
+          "SELECT id, text FROM observations WHERE bank_id = ? ORDER BY id",
+        )
+        .all(this.agentId) as { id: string; text: string }[];
+    } catch {
+      return [];
+    } finally {
+      db.close();
+    }
+  }
+
+  private observationSources(): Map<string, string[]> {
+    const sources = new Map<string, string[]>();
+    const db = new Database(this.file, { readonly: true });
+    try {
+      const rows = db
+        .query(
+          `SELECT observation_id, fact_id
+           FROM observation_sources
+           WHERE bank_id = ?`,
+        )
+        .all(this.agentId) as { observation_id: string; fact_id: string }[];
+      for (const row of rows) {
+        const list = sources.get(row.observation_id) ?? [];
+        list.push(row.fact_id);
+        sources.set(row.observation_id, list);
+      }
+    } catch {
+      return sources;
+    } finally {
+      db.close();
+    }
+    return sources;
+  }
+
+  private junkObservations(
     junkIds: Set<string>,
     seen: Set<string>,
   ): { id: string; text: string; reason: string }[] {
-    if (junkIds.size === 0) {
-      return [];
-    }
-    const snapshot = this.requireBank().graphSnapshot({
-      includeObservations: true,
-      limit: 1000,
-    });
-    const sources = new Map<string, string[]>();
-    for (const edge of snapshot.edges) {
-      if (edge.type !== "derived") {
-        continue;
-      }
-      const list = sources.get(edge.source) ?? [];
-      list.push(edge.target);
-      sources.set(edge.source, list);
-    }
+    const sources = this.observationSources();
     const found: { id: string; text: string; reason: string }[] = [];
-    for (const node of snapshot.nodes) {
-      if (!node.derived || seen.has(node.id)) {
+    for (const row of this.storedObservations()) {
+      if (seen.has(row.id) || row.text.trim().length === 0) {
         continue;
       }
-      const cited = sources.get(node.id) ?? [];
-      if (cited.length === 0 || cited.some((id) => !junkIds.has(id))) {
+      const cited = sources.get(row.id) ?? [];
+      const fromJunk = cited.length > 0 && cited.every((id) => junkIds.has(id));
+      const reason = transientFactReason(row.text);
+      if (reason == null && !fromJunk) {
         continue;
       }
-      seen.add(node.id);
+      seen.add(row.id);
       found.push({
-        id: node.id,
-        text: node.label,
-        reason: "derived-from-junk",
+        id: row.id,
+        text: row.text,
+        reason: reason ?? "derived-from-junk",
       });
     }
     return found;
+  }
+
+  private deleteObservations(ids: string[]): number {
+    if (ids.length === 0) {
+      return 0;
+    }
+    const db = new Database(this.file);
+    try {
+      db.exec("PRAGMA foreign_keys = ON;");
+      const marks = ids.map(() => "?").join(", ");
+      const result = db
+        .query(
+          `DELETE FROM observations WHERE bank_id = ? AND id IN (${marks})`,
+        )
+        .run(this.agentId, ...ids);
+      return result.changes;
+    } finally {
+      db.close();
+    }
   }
 
   private decorate(observations: ObservationRecord[]): MemoryFact[] {

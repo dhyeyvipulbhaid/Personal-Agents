@@ -16,6 +16,22 @@
         </div>
       </header>
 
+      <section class="card">
+        <h2>Graph</h2>
+        <div class="button-row">
+          <button type="button" id="graph-toggle" class="ghost">Pause</button>
+          <button type="button" id="graph-refresh" class="ghost">Refresh</button>
+        </div>
+        <div id="edge-filters" class="button-row edge-filters"></div>
+        <div id="graph-legend" class="graph-legend"></div>
+        <p id="graph-status" class="notice"></p>
+        <div class="graph-stage">
+          <canvas id="memory-graph" width="800" height="480" aria-label="Memory graph"></canvas>
+          <p id="graph-hover" class="graph-hover" hidden></p>
+        </div>
+        <article id="graph-detail" class="graph-detail" hidden></article>
+      </section>
+
       <section class="card" id="memory-settings">
         <h2>Settings</h2>
         <form id="settings-form" class="stack">
@@ -87,22 +103,6 @@
           <button type="button" id="sweep-apply" class="danger" hidden>Delete junk</button>
         </div>
         <ul id="sweep-list" class="plain-list"></ul>
-      </section>
-
-      <section class="card">
-        <h2>Graph</h2>
-        <div class="button-row">
-          <button type="button" id="graph-toggle" class="ghost">Pause</button>
-          <button type="button" id="graph-refresh" class="ghost">Refresh</button>
-        </div>
-        <div id="edge-filters" class="button-row edge-filters"></div>
-        <div id="graph-legend" class="graph-legend"></div>
-        <p id="graph-status" class="notice"></p>
-        <div class="graph-stage">
-          <canvas id="memory-graph" width="800" height="480" aria-label="Memory graph"></canvas>
-          <p id="graph-hover" class="graph-hover" hidden></p>
-        </div>
-        <article id="graph-detail" class="graph-detail" hidden></article>
       </section>
     </template>
     <script src="shortcut.js"></script>
