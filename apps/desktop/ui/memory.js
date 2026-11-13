@@ -326,8 +326,16 @@ function runGraph() {
       return;
     }
     simulation.step();
+    const canvas = document.getElementById("memory-graph");
+    const width = Math.max(
+      320,
+      Math.floor(canvas?.getBoundingClientRect().width || 800),
+    );
+    if (simulation.justSettled()) {
+      simulation.fit(width, 480);
+    }
     drawGraph();
-    if (!simulation.isPaused()) {
+    if (!simulation.isPaused() && !simulation.isSettled()) {
       graphFrame = requestAnimationFrame(tick);
     }
   };
@@ -379,11 +387,23 @@ async function showGraph() {
       snapshot.texts && typeof snapshot.texts === "object"
         ? snapshot.texts
         : {};
-    simulation = graphApi.createSimulation(snapshot);
+    if (simulation) {
+      simulation.sync(snapshot);
+    } else {
+      simulation = graphApi.createSimulation(snapshot);
+    }
     const toggle = document.getElementById("graph-toggle");
-    toggle.textContent = "Pause";
-    renderLegend();
-    runGraph();
+    if (!simulation.isPaused()) {
+      toggle.textContent = "Pause";
+    }
+    if (!document.getElementById("edge-filters").childElementCount) {
+      renderLegend();
+    }
+    if (simulation.isSettled()) {
+      drawGraph();
+    } else {
+      runGraph();
+    }
   } catch (error) {
     const detail = messageOf(error);
     if (/unexpected command|Method not found/i.test(detail)) {
@@ -497,8 +517,8 @@ document.getElementById("reflect-form").addEventListener("submit", (event) => {
   reflectStatus.textContent = "Reflecting…";
   window.pa
     .invoke("memory_reflect", query ? { query } : {})
-    .then((raw) => {
-      renderObservations(JSON.parse(raw));
+    .then(async () => {
+      await showObservations();
       reflectStatus.textContent = "";
       return showGraph();
     })
@@ -595,7 +615,10 @@ canvas.addEventListener("pointermove", (event) => {
   }
   if (pointer.nodeId) {
     const world = simulation.screenToWorld(x, y);
-    simulation.moveNode(pointer.nodeId, world.x, world.y);
+    simulation.moveNode(pointer.nodeId, world.x, world.y, { reheat: true });
+    if (!simulation.isSettled() && !graphFrame) {
+      runGraph();
+    }
   } else {
     simulation.panBy(dx, dy);
   }
