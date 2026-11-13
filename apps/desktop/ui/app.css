@@ -672,6 +672,103 @@ button.danger {
   font-size: 12px;
 }
 
+.check-line {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.fact-list li,
+.fact-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.fact-row div {
+  flex: 1;
+}
+
+.observation {
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.observation p,
+.cited {
+  margin: 6px 0 0;
+}
+
+.cited {
+  color: var(--muted);
+  padding-left: 18px;
+}
+
+.pager {
+  margin-top: 12px;
+}
+
+.graph-stage {
+  position: relative;
+  margin-top: 12px;
+}
+
+#memory-graph {
+  display: block;
+  width: 100%;
+  height: 480px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--sunken);
+  touch-action: none;
+}
+
+.graph-legend,
+.edge-filters {
+  margin-top: 8px;
+}
+
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.swatch {
+  width: 28px;
+  height: 10px;
+  border-radius: 999px;
+}
+
+.graph-hover {
+  position: absolute;
+  z-index: 2;
+  max-width: 280px;
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: var(--shadow);
+}
+
+.graph-detail {
+  margin-top: 12px;
+  padding: 12px;
+  border-radius: 12px;
+  background: var(--sunken);
+}
+
+.graph-detail h3,
+.graph-detail p {
+  margin: 0 0 8px;
+}
+
 @media (max-width: 980px) {
   .layout {
     flex-direction: column;
