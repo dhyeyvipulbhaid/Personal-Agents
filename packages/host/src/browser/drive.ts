@@ -4,7 +4,7 @@ import { createServer } from "node:net";
 import { homedir } from "node:os";
 import { join, posix, win32 } from "node:path";
 import type { ActivityEntry, Approvals } from "../approvals/approvals.ts";
-import { thumbParams } from "./preview.ts";
+import { MAX_THUMB_CHARS, thumbParams } from "./preview.ts";
 import { READABLE_CHAR_LIMIT } from "./read.ts";
 import type { BrowserSession } from "./session.ts";
 
@@ -42,6 +42,41 @@ type DriveOptions = {
 };
 
 type Gate = "approved" | "denied" | "cancelled";
+
+/** One Chrome command. A heavy page must not stall the host past this. */
+export const CDP_COMMAND_MS = 3_000;
+const READY_BUDGET_MS = 1_500;
+const MAX_CDP_CHARS = 400_000;
+
+export function commandDeadline<T>(
+  work: Promise<T>,
+  ms: number,
+  label: string,
+): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`Chrome did not answer ${label}.`));
+    }, ms);
+    work.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
+function isCdpTimeout(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    (error.message.startsWith("Chrome did not answer") ||
+      error.message.includes("too large"))
+  );
+}
 
 /** Drives the installed Chrome over the remote debugging port. */
 export class BrowserDrive {
@@ -83,11 +118,17 @@ export class BrowserDrive {
     if (!this.client) {
       return "";
     }
-    const shot = (await this.client.send(
-      "Page.captureScreenshot",
-      thumbParams(),
-    )) as { data?: string };
-    return typeof shot.data === "string" ? shot.data : "";
+    try {
+      const shot = (await this.command(
+        this.client,
+        "Page.captureScreenshot",
+        thumbParams(),
+      )) as { data?: string };
+      const data = typeof shot.data === "string" ? shot.data : "";
+      return data.length <= MAX_THUMB_CHARS ? data : "";
+    } catch {
+      return "";
+    }
   }
 
   async halt(): Promise<void> {
@@ -133,8 +174,18 @@ export class BrowserDrive {
       if (this.halted(signal)) {
         return this.stopped(url);
       }
-      await client.send("Page.navigate", { url });
-      await this.waitReady(client, signal);
+      let ready = false;
+      try {
+        await this.command(client, "Page.navigate", { url });
+        ready = await this.waitReady(client, signal);
+      } catch (error) {
+        if (this.halted(signal) || isAbort(error)) {
+          return this.stopped(url);
+        }
+        if (!isCdpTimeout(error)) {
+          throw error;
+        }
+      }
       if (this.halted(signal)) {
         return this.stopped(url);
       }
@@ -142,11 +193,12 @@ export class BrowserDrive {
       this.approvedHosts.add(host);
       this.options.session.note(summary);
       this.log(`Navigated to ${host}`);
+      const loading = ready ? "" : " The page is still loading.";
       return {
         ok: true,
         allowed: true,
         url,
-        message: `Opened ${host} in Chrome.`,
+        message: `Opened ${host} in Chrome.${loading}`,
       };
     } catch (error) {
       if (this.halted(signal) || isAbort(error)) {
@@ -358,9 +410,22 @@ export class BrowserDrive {
       return this.stopped(this.currentUrl);
     }
     const client = await this.ensure(this.currentUrl);
-    const shot = (await client.send("Page.captureScreenshot", {
-      format: "png",
-    })) as { data?: string };
+    let shot: { data?: string };
+    try {
+      shot = (await this.command(client, "Page.captureScreenshot", {
+        format: "png",
+      })) as { data?: string };
+    } catch (error) {
+      if (!isCdpTimeout(error)) {
+        throw error;
+      }
+      return {
+        ok: false,
+        allowed: true,
+        url: this.currentUrl,
+        message: "Chrome did not return the image.",
+      };
+    }
     const bytes = Buffer.from(shot.data ?? "", "base64");
     this.shots += 1;
     const dir = join(this.options.dataDir, "browser-shots");
@@ -398,18 +463,26 @@ export class BrowserDrive {
     return decision.decision === "approved" ? "approved" : "denied";
   }
 
+  private command(
+    client: CdpClient,
+    method: string,
+    params?: Record<string, unknown>,
+  ): Promise<unknown> {
+    return commandDeadline(client.send(method, params), CDP_COMMAND_MS, method);
+  }
+
   private async ensure(url: string): Promise<CdpClient> {
     if (!this.client) {
       this.client = await this.options.connect(url);
-      await this.client.send("Page.enable");
-      await this.client.send("Runtime.enable");
+      await this.command(this.client, "Page.enable");
+      await this.command(this.client, "Runtime.enable");
     }
     return this.client;
   }
 
   private async evaluate(expression: string): Promise<unknown> {
     const client = await this.ensure(this.currentUrl || "about:blank");
-    const payload = (await client.send("Runtime.evaluate", {
+    const payload = (await this.command(client, "Runtime.evaluate", {
       expression,
       returnByValue: true,
     })) as {
@@ -427,18 +500,27 @@ export class BrowserDrive {
   private async waitReady(
     client: CdpClient,
     signal?: AbortSignal,
-  ): Promise<void> {
-    for (let attempt = 0; attempt < 20; attempt += 1) {
+  ): Promise<boolean> {
+    const deadlineAt = Date.now() + READY_BUDGET_MS;
+    while (Date.now() < deadlineAt) {
       if (this.halted(signal)) {
-        return;
+        return false;
       }
-      const state = await this.evaluate("document.readyState");
-      if (state === "complete" || state === "interactive") {
-        return;
+      try {
+        const state = await this.evaluate("document.readyState");
+        if (state === "complete" || state === "interactive") {
+          return true;
+        }
+      } catch (error) {
+        if (isCdpTimeout(error)) {
+          return false;
+        }
+        throw error;
       }
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
     void client;
+    return false;
   }
 
   private canDrive(): boolean {
@@ -712,12 +794,18 @@ function freePort(): Promise<number> {
   });
 }
 
-async function waitForPage(port: number): Promise<string> {
-  const deadline = Date.now() + 8_000;
+export async function waitForPage(
+  port: number,
+  deadlineMs = 8_000,
+): Promise<string> {
+  const deadlineAt = Date.now() + deadlineMs;
   let last = "Chrome did not open a debugging page.";
-  while (Date.now() < deadline) {
+  while (Date.now() < deadlineAt) {
     try {
-      const response = await fetch(`http://127.0.0.1:${port}/json/list`);
+      const remaining = Math.max(1, deadlineAt - Date.now());
+      const response = await fetch(`http://127.0.0.1:${port}/json/list`, {
+        signal: AbortSignal.timeout(Math.min(1_000, remaining)),
+      });
       const list = (await response.json()) as {
         type?: string;
         webSocketDebuggerUrl?: string;
@@ -731,18 +819,31 @@ async function waitForPage(port: number): Promise<string> {
     } catch (error) {
       last = error instanceof Error ? error.message : last;
     }
+    if (Date.now() >= deadlineAt) {
+      break;
+    }
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   throw new Error(last);
 }
 
-function openSocket(url: string, onClose: () => void): Promise<CdpClient> {
+export function openSocket(
+  url: string,
+  onClose: () => void,
+  commandMs = CDP_COMMAND_MS,
+): Promise<CdpClient> {
   const ws = new WebSocket(url);
   let next = 0;
   const pending = new Map<
     number,
     { resolve: (value: unknown) => void; reject: (error: Error) => void }
   >();
+  const failPending = (message: string) => {
+    for (const waiter of pending.values()) {
+      waiter.reject(new Error(message));
+    }
+    pending.clear();
+  };
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       reject(new Error("Chrome debugging socket did not open."));
@@ -754,11 +855,35 @@ function openSocket(url: string, onClose: () => void): Promise<CdpClient> {
           const id = next + 1;
           next = id;
           return new Promise((res, rej) => {
-            pending.set(id, { resolve: res, reject: rej });
-            ws.send(JSON.stringify({ id, method, params }));
+            const commandTimer = setTimeout(() => {
+              pending.delete(id);
+              rej(new Error(`Chrome did not answer ${method}.`));
+            }, commandMs);
+            pending.set(id, {
+              resolve: (value) => {
+                clearTimeout(commandTimer);
+                res(value);
+              },
+              reject: (error) => {
+                clearTimeout(commandTimer);
+                rej(error);
+              },
+            });
+            try {
+              ws.send(JSON.stringify({ id, method, params }));
+            } catch (error) {
+              clearTimeout(commandTimer);
+              pending.delete(id);
+              rej(
+                error instanceof Error
+                  ? error
+                  : new Error("Chrome debugging socket failed."),
+              );
+            }
           });
         },
         async close() {
+          failPending("Chrome debugging socket closed.");
           ws.close();
           onClose();
         },
@@ -768,8 +893,22 @@ function openSocket(url: string, onClose: () => void): Promise<CdpClient> {
       clearTimeout(timer);
       reject(new Error("Chrome debugging socket failed."));
     });
+    ws.addEventListener("close", () => {
+      failPending("Chrome debugging socket closed.");
+    });
     ws.addEventListener("message", (event) => {
-      const message = JSON.parse(String(event.data)) as {
+      const raw =
+        typeof event.data === "string" ? event.data : String(event.data);
+      if (raw.length > MAX_CDP_CHARS) {
+        const idMatch = /^\{"id":(\d+)/.exec(raw.slice(0, 80));
+        if (idMatch) {
+          const waiter = pending.get(Number(idMatch[1]));
+          pending.delete(Number(idMatch[1]));
+          waiter?.reject(new Error("Chrome sent a result that was too large."));
+        }
+        return;
+      }
+      const message = JSON.parse(raw) as {
         id?: number;
         result?: unknown;
         error?: { message?: string };

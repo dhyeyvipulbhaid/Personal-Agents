@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { mkdtempSync, readFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createFakeExtractor } from "memory-bank";
@@ -11,6 +12,8 @@ import {
   type CdpClient,
   chromeExecutable,
   chromeLaunchArgs,
+  openSocket,
+  waitForPage,
 } from "./drive.ts";
 import { BrowserSession } from "./session.ts";
 
@@ -573,6 +576,223 @@ test("stop during a pending click does not click", async () => {
     );
   } finally {
     app.close();
+  }
+});
+
+test("a hung navigate command finishes while chat stays reachable", async () => {
+  let calls = 0;
+  const adapter: ModelAdapter = {
+    async listModels() {
+      return [];
+    },
+    async chat() {
+      calls += 1;
+      if (calls === 1) {
+        return {
+          text: "",
+          toolCall: {
+            name: "browser.navigate",
+            arguments: JSON.stringify({ url: "https://www.apple.com/" }),
+          },
+        };
+      }
+      return { text: "Opened www.apple.com. The page is still loading." };
+    },
+    async structured<T>(): Promise<T> {
+      return {} as T;
+    },
+  };
+  const app = new DesktopApp({
+    dataDir: mkdtempSync(join(tmpdir(), "pa-drive-hang-")),
+    adapter,
+    probe: async () => "running",
+    memoryExtractor: createFakeExtractor(() => []),
+    chromePath: "chrome",
+    browserConnect: async () => ({
+      send(method: string) {
+        if (method === "Page.navigate" || method === "Runtime.evaluate") {
+          return new Promise(() => {});
+        }
+        return Promise.resolve({});
+      },
+      async close() {},
+    }),
+  });
+  await app.start();
+  const methods = app.methods();
+  try {
+    const send = methods.chat_send({
+      text: "Navigate to https://www.apple.com",
+    });
+    const pending = await waitFor(methods);
+    expect(pending.summary).toBe("navigate to www.apple.com");
+    const approved = await Promise.race([
+      Promise.resolve(
+        methods.chat_approve({ id: pending.id, action: "approve" }),
+      ).then(() => "ok"),
+      Bun.sleep(1_000).then(() => "hung"),
+    ]);
+    expect(approved).toBe("ok");
+    const state = await Promise.race([
+      Promise.resolve(methods.chat_state({})).then(() => "ok"),
+      Bun.sleep(1_000).then(() => "hung"),
+    ]);
+    expect(state).toBe("ok");
+    const done = await Promise.race([
+      Promise.resolve(send).then((raw) => raw),
+      Bun.sleep(8_000).then(() => "hung"),
+    ]);
+    expect(done).not.toBe("hung");
+    const view = JSON.parse(String(done)) as {
+      messages: { role: string; text: string }[];
+    };
+    expect(
+      view.messages.some((message) => message.text.includes("still loading")),
+    ).toBe(true);
+  } finally {
+    app.close();
+  }
+}, 15_000);
+
+test("a hung ready check still reports the page as opened", async () => {
+  const { drive, approvals } = harness({
+    connect: async () => ({
+      send(method: string) {
+        if (method === "Runtime.evaluate") {
+          return new Promise(() => {});
+        }
+        return Promise.resolve({});
+      },
+      async close() {},
+    }),
+  });
+  const pending = drive.navigate("https://www.apple.com/");
+  approvals.approve(approvals.pending()[0]?.id ?? "");
+  const result = await Promise.race([
+    pending,
+    Bun.sleep(8_000).then(() => "hung" as const),
+  ]);
+  expect(result).not.toBe("hung");
+  if (result === "hung") {
+    throw new Error("navigate hung");
+  }
+  expect(result.ok).toBe(true);
+  expect(result.allowed).toBe(true);
+  expect(result.message).toContain("www.apple.com");
+  expect(result.message).toContain("still loading");
+}, 12_000);
+
+test("a silent debugging port does not stall past its deadline", async () => {
+  const server = createServer((socket) => {
+    socket.on("error", () => {});
+  });
+  await new Promise<void>((resolve) => {
+    server.listen(0, "127.0.0.1", () => resolve());
+  });
+  const address = server.address();
+  const port = typeof address === "object" && address ? address.port : 0;
+  try {
+    const result = await Promise.race([
+      waitForPage(port, 400).then(
+        () => "opened",
+        () => "failed",
+      ),
+      Bun.sleep(1_500).then(() => "hung"),
+    ]);
+    expect(result).toBe("failed");
+  } finally {
+    server.close();
+  }
+});
+
+test("a debugging command that never replies is bounded", async () => {
+  const server = Bun.serve({
+    port: 0,
+    fetch(request, wsServer) {
+      if (wsServer.upgrade(request)) {
+        return undefined;
+      }
+      return new Response("no");
+    },
+    websocket: {
+      message() {},
+    },
+  });
+  const client = await openSocket(
+    `ws://${server.hostname}:${server.port}`,
+    () => {},
+    200,
+  );
+  try {
+    const result = await Promise.race([
+      client.send("Page.navigate", { url: "https://www.apple.com/" }).then(
+        () => "replied",
+        (error: Error) => error.message,
+      ),
+      Bun.sleep(1_000).then(() => "hung"),
+    ]);
+    expect(result).not.toBe("hung");
+    expect(String(result)).toContain("Page.navigate");
+    const next = await Promise.race([
+      client.send("Runtime.evaluate").then(
+        () => "replied",
+        (error: Error) => error.message,
+      ),
+      Bun.sleep(1_000).then(() => "hung"),
+    ]);
+    expect(next).not.toBe("hung");
+  } finally {
+    await client.close();
+    server.stop(true);
+  }
+});
+
+test("a huge Chrome result does not stall the next command", async () => {
+  const server = Bun.serve({
+    port: 0,
+    fetch(request, wsServer) {
+      if (wsServer.upgrade(request)) {
+        return undefined;
+      }
+      return new Response("no");
+    },
+    websocket: {
+      message(socket, message) {
+        const text = String(message);
+        const id = Number(/"id":(\d+)/.exec(text)?.[1] ?? "0");
+        if (text.includes("Page.captureScreenshot")) {
+          socket.send(
+            `{"id":${id},"result":{"data":"${"A".repeat(500_000)}"}}`,
+          );
+          return;
+        }
+        socket.send(`{"id":${id},"result":{}}`);
+      },
+    },
+  });
+  const client = await openSocket(
+    `ws://${server.hostname}:${server.port}`,
+    () => {},
+    1_000,
+  );
+  try {
+    const shot = await Promise.race([
+      client.send("Page.captureScreenshot").then(
+        () => "ok",
+        (error: Error) => error.message,
+      ),
+      Bun.sleep(2_000).then(() => "hung"),
+    ]);
+    expect(shot).not.toBe("hung");
+    expect(String(shot)).toContain("too large");
+    const next = await Promise.race([
+      client.send("Runtime.evaluate").then(() => "ok"),
+      Bun.sleep(1_000).then(() => "hung"),
+    ]);
+    expect(next).toBe("ok");
+  } finally {
+    await client.close();
+    server.stop(true);
   }
 });
 

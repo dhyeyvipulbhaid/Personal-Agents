@@ -142,6 +142,27 @@ test("a notification gets no response", async () => {
   ).toBeNull();
 });
 
+test("an oversized frame does not swallow the next one", () => {
+  const buffer = new FrameBuffer();
+  const huge = 1_200_000;
+  const header = new TextEncoder().encode(`Content-Length: ${huge}\r\n\r\n`);
+  const body = new Uint8Array(huge);
+  const next = encodeFrame(new TextEncoder().encode('{"ok":true}'));
+  const all = new Uint8Array(
+    header.byteLength + body.byteLength + next.byteLength,
+  );
+  all.set(header, 0);
+  all.set(body, header.byteLength);
+  all.set(next, header.byteLength + body.byteLength);
+  const frames: Uint8Array[] = [];
+  for (let index = 0; index < all.byteLength; index += 64_000) {
+    frames.push(...buffer.push(all.subarray(index, index + 64_000)));
+  }
+  expect(frames.map((item) => new TextDecoder().decode(item))).toEqual([
+    '{"ok":true}',
+  ]);
+});
+
 test("the stdio server answers ping and version", async () => {
   const proc = Bun.spawn([process.execPath, join(import.meta.dir, "main.ts")], {
     stdin: "pipe",

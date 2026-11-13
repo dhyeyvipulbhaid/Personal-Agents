@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use tauri::Manager;
 
 use crate::audit;
-use crate::rpc::{audit_line, encode_request_params, next_frame, parse_response};
+use crate::rpc::{audit_line, encode_request_params, parse_response, FrameParser};
 
 const CALL_TIMEOUT: Duration = Duration::from_secs(10);
 const READY_TIMEOUT: Duration = Duration::from_secs(20);
@@ -94,10 +94,7 @@ impl HostHandle {
     }
 
     pub fn note_displayed(&self, version: &str) -> Result<(), String> {
-        if version.is_empty()
-            || version.len() > 64
-            || version.chars().any(|ch| ch.is_control())
-        {
+        if version.is_empty() || version.len() > 64 || version.chars().any(|ch| ch.is_control()) {
             return Err("invalid version".into());
         }
         self.inner
@@ -126,7 +123,10 @@ impl HostHandle {
         let deadline = Instant::now() + READY_TIMEOUT;
         let mut last = "agent host is not running".to_string();
         while Instant::now() < deadline {
-            match self.inner.call_params_timeout(method, params.clone(), timeout) {
+            match self
+                .inner
+                .call_params_timeout(method, params.clone(), timeout)
+            {
                 Ok(value) => return Ok(value),
                 Err(err) => {
                     if err == "agent host timed out" {
@@ -213,9 +213,11 @@ pub async fn approval_act(
         "scope": scope,
         "until": until,
     });
-    tauri::async_runtime::spawn_blocking(move || host.call_params_when_ready("approval_act", params))
-        .await
-        .map_err(|err| err.to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        host.call_params_when_ready("approval_act", params)
+    })
+    .await
+    .map_err(|err| err.to_string())?
 }
 
 #[tauri::command]
@@ -493,10 +495,7 @@ impl HostInner {
         let mut child = match host_command(&self.bin, &self.data_dir).spawn() {
             Ok(child) => child,
             Err(err) => {
-                self.log_line(&format!(
-                    "host-spawn-error: {err} ({})",
-                    self.bin.display()
-                ));
+                self.log_line(&format!("host-spawn-error: {err} ({})", self.bin.display()));
                 return false;
             }
         };
@@ -636,24 +635,19 @@ impl HostInner {
 }
 
 fn read_stdout(mut stdout: ChildStdout, pending: Arc<Pending>, audit: PathBuf) {
-    let mut buffer = Vec::new();
-    let mut chunk = [0u8; 4096];
+    let mut parser = FrameParser::new();
+    let mut chunk = [0u8; 8192];
     loop {
-        if buffer.len() > MAX_BUFFER {
-            break;
-        }
         match stdout.read(&mut chunk) {
             Ok(0) | Err(_) => break,
-            Ok(count) => {
-                buffer.extend_from_slice(&chunk[..count]);
-                loop {
-                    match next_frame(&mut buffer) {
-                        Ok(None) => break,
-                        Ok(Some(body)) => handle_host_frame(&body, &pending, &audit),
-                        Err(_) => return,
+            Ok(count) => match parser.push(&chunk[..count]) {
+                Ok(frames) => {
+                    for body in frames {
+                        handle_host_frame(&body, &pending, &audit);
                     }
                 }
-            }
+                Err(_) => parser.clear(),
+            },
         }
     }
 }
@@ -689,8 +683,6 @@ fn read_stderr(stderr: ChildStderr, host: &HostInner) {
     }
 }
 
-const MAX_BUFFER: usize = 1_000_000;
-
 /// The packaged host sits next to this executable. The bundler copies
 /// `binaries/agent-host-<target>` to that plain name.
 fn sidecar_path() -> Result<PathBuf, String> {
@@ -706,10 +698,7 @@ fn sidecar_path() -> Result<PathBuf, String> {
     };
     let path = dir.join(name);
     if !path.is_file() {
-        return Err(format!(
-            "agent host binary missing at {}",
-            path.display()
-        ));
+        return Err(format!("agent host binary missing at {}", path.display()));
     }
     Ok(path)
 }
@@ -748,9 +737,7 @@ fn kill_pid(pid: u32) {
     }
     #[cfg(unix)]
     {
-        let _ = Command::new("kill")
-            .args(["-9", &pid.to_string()])
-            .output();
+        let _ = Command::new("kill").args(["-9", &pid.to_string()]).output();
     }
 }
 
