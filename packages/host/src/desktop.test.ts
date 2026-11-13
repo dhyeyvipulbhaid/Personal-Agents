@@ -227,6 +227,84 @@ test("recalled facts are in the prompt, and a failed recall still replies", asyn
   }
 });
 
+test("recalled facts stay in the prompt and on the memory page, not in the chat thread", async () => {
+  const seen: ChatRequest[] = [];
+  const memory = new ChatMemory({
+    dataDir: mkdtempSync(join(tmpdir(), "pa-chat-hide-facts-")),
+    extractor: createFakeExtractor(() => []),
+  });
+  const facts = [
+    "The civic archive is now open in the user's browser.",
+    "The user attempted to navigate to portal.invalid, but the assistant stopped the action.",
+    "The assistant opened portal.invalid in Chrome.",
+  ];
+  for (const fact of facts) {
+    await memory.remember(fact);
+  }
+  const reply =
+    "I have successfully opened the civic archive. Let me know if there's anything specific you'd like to explore or look up!";
+  const { app, methods } = await harness(
+    async (request) => {
+      seen.push(request);
+      return { text: reply };
+    },
+    async () => "stopped",
+    memory,
+  );
+  try {
+    const state = JSON.parse(
+      await methods.chat_send({
+        text: "Navigate to the civic archive and tell me what opened in Chrome.",
+      }),
+    ) as { messages: { role: string; text: string }[] };
+    const context = seen
+      .at(-1)
+      ?.messages.find((message) => message.role === "system");
+    for (const fact of facts) {
+      expect(context?.content).toContain(`${fact} (source chat)`);
+    }
+    expect(
+      state.messages
+        .filter((message) => message.role === "assistant")
+        .map((message) => message.text),
+    ).toEqual([reply]);
+    const thread = state.messages.map((message) => message.text).join("\n");
+    expect(state.messages.some((message) => message.role === "memory")).toBe(
+      false,
+    );
+    expect(thread).not.toContain("(source ");
+    for (const fact of facts) {
+      expect(thread).not.toContain(fact);
+    }
+    await memory.settle();
+    const listed = JSON.parse(await methods.memory_list({})) as {
+      text: string;
+      source: string;
+    }[];
+    expect(listed.map((fact) => fact.text).sort()).toEqual([...facts].sort());
+    expect(listed.every((fact) => fact.source === "chat")).toBe(true);
+
+    const again = JSON.parse(
+      await methods.chat_send({
+        text: "Navigate to the civic archive and tell me what opened in Chrome.",
+      }),
+    ) as { messages: { role: string; text: string }[] };
+    expect(
+      again.messages
+        .filter((message) => message.role === "assistant")
+        .map((message) => message.text),
+    ).toEqual([reply, reply]);
+    expect(again.messages.some((message) => message.role === "memory")).toBe(
+      false,
+    );
+    expect(
+      again.messages.map((message) => message.text).join("\n"),
+    ).not.toContain("(source ");
+  } finally {
+    app.close();
+  }
+});
+
 test("saving a fact on the memory page writes through the chat bank", async () => {
   const seen: ChatRequest[] = [];
   const memory = new ChatMemory({
