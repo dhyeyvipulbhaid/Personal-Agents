@@ -140,6 +140,10 @@ impl HostHandle {
         Err(last)
     }
 
+    fn ensure_unlocked(&self) -> Result<(), String> {
+        self.inner.ensure_unlocked()
+    }
+
     fn call_when_ready(&self, method: &str) -> Result<String, String> {
         let deadline = Instant::now() + READY_TIMEOUT;
         let mut last = "agent host is not running".to_string();
@@ -238,6 +242,24 @@ async fn call_host(
     tauri::async_runtime::spawn_blocking(move || host.call_when_ready(method))
         .await
         .map_err(|err| err.to_string())?
+}
+
+async fn call_memory(
+    host: tauri::State<'_, HostHandle>,
+    method: &'static str,
+    params: Option<serde_json::Value>,
+    timeout: Duration,
+) -> Result<String, String> {
+    let host = host.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        host.ensure_unlocked()?;
+        match params {
+            Some(params) => host.call_params_when_ready_timeout(method, params, timeout),
+            None => host.call_when_ready(method),
+        }
+    })
+    .await
+    .map_err(|err| err.to_string())?
 }
 
 async fn call_host_params(
@@ -402,7 +424,31 @@ pub async fn mail_draft(host: tauri::State<'_, HostHandle>, id: String) -> Resul
 
 #[tauri::command]
 pub async fn memory_list(host: tauri::State<'_, HostHandle>) -> Result<String, String> {
-    call_host(host, "memory_list").await
+    call_memory(host, "memory_list", None, CALL_TIMEOUT).await
+}
+
+#[tauri::command]
+pub async fn memory_page(
+    host: tauri::State<'_, HostHandle>,
+    limit: Option<u32>,
+    offset: Option<u32>,
+    query: Option<String>,
+    entity: Option<String>,
+    kind: Option<String>,
+) -> Result<String, String> {
+    call_memory(
+        host,
+        "memory_page",
+        Some(serde_json::json!({
+            "limit": limit,
+            "offset": offset,
+            "query": query.unwrap_or_default(),
+            "entity": entity.unwrap_or_default(),
+            "kind": kind.unwrap_or_default(),
+        })),
+        CALL_TIMEOUT,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -411,10 +457,25 @@ pub async fn memory_remember(
     text: String,
     session_id: Option<String>,
 ) -> Result<String, String> {
-    call_host_params(
+    call_memory(
         host,
         "memory_remember",
-        serde_json::json!({ "text": text, "sessionId": session_id.unwrap_or_default() }),
+        Some(serde_json::json!({ "text": text, "sessionId": session_id.unwrap_or_default() })),
+        CALL_TIMEOUT,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn memory_update(
+    host: tauri::State<'_, HostHandle>,
+    id: String,
+    text: String,
+) -> Result<String, String> {
+    call_memory(
+        host,
+        "memory_update",
+        Some(serde_json::json!({ "id": id, "text": text })),
         CALL_TIMEOUT,
     )
     .await
@@ -425,13 +486,108 @@ pub async fn memory_delete(
     host: tauri::State<'_, HostHandle>,
     id: String,
 ) -> Result<String, String> {
-    call_host_params(
+    call_memory(
         host,
         "memory_delete",
-        serde_json::json!({ "id": id }),
+        Some(serde_json::json!({ "id": id })),
         CALL_TIMEOUT,
     )
     .await
+}
+
+#[tauri::command]
+pub async fn memory_delete_many(
+    host: tauri::State<'_, HostHandle>,
+    ids: Vec<String>,
+) -> Result<String, String> {
+    call_memory(
+        host,
+        "memory_delete_many",
+        Some(serde_json::json!({ "ids": ids })),
+        CALL_TIMEOUT,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn memory_sweep(
+    host: tauri::State<'_, HostHandle>,
+    dry_run: Option<bool>,
+) -> Result<String, String> {
+    call_memory(
+        host,
+        "memory_sweep",
+        Some(serde_json::json!({ "dryRun": dry_run.unwrap_or(true) })),
+        CALL_TIMEOUT,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn memory_graph(host: tauri::State<'_, HostHandle>) -> Result<String, String> {
+    call_memory(host, "memory_graph", None, CALL_TIMEOUT).await
+}
+
+#[tauri::command]
+pub async fn memory_observations(host: tauri::State<'_, HostHandle>) -> Result<String, String> {
+    call_memory(host, "memory_observations", None, CALL_TIMEOUT).await
+}
+
+#[tauri::command]
+pub async fn memory_reflect(
+    host: tauri::State<'_, HostHandle>,
+    query: Option<String>,
+) -> Result<String, String> {
+    call_memory(
+        host,
+        "memory_reflect",
+        Some(serde_json::json!({ "query": query.unwrap_or_default() })),
+        CHAT_TIMEOUT,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn memory_settings(host: tauri::State<'_, HostHandle>) -> Result<String, String> {
+    call_memory(host, "memory_settings", None, CALL_TIMEOUT).await
+}
+
+#[tauri::command]
+pub async fn memory_save_settings(
+    host: tauri::State<'_, HostHandle>,
+    embedding_model: Option<String>,
+    include_observations: Option<bool>,
+) -> Result<String, String> {
+    call_memory(
+        host,
+        "memory_save_settings",
+        Some(serde_json::json!({
+            "embeddingModel": embedding_model.unwrap_or_default(),
+            "includeObservations": include_observations,
+        })),
+        CALL_TIMEOUT,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn memory_enable_encryption(
+    host: tauri::State<'_, HostHandle>,
+) -> Result<String, String> {
+    let key = crate::keychain::load_or_create(&crate::keychain::OsSecretStore)?;
+    let inner = host.inner().clone();
+    let secret = key;
+    tauri::async_runtime::spawn_blocking(move || {
+        inner
+            .call_params_when_ready_timeout(
+                "memory_encrypt",
+                serde_json::json!({ "key": secret.clone() }),
+                CALL_TIMEOUT,
+            )
+            .map_err(|err| crate::keychain::redact(&err, &secret))
+    })
+    .await
+    .map_err(|err| err.to_string())?
 }
 
 #[tauri::command]
@@ -530,6 +686,12 @@ impl HostInner {
         let healthy = match self.call("version") {
             Ok(version) => {
                 self.log_line(&format!("host-started pid={pid} version={version}"));
+                if encryption_enabled(&self.data_dir) {
+                    match self.ensure_unlocked() {
+                        Ok(()) => self.log_line("memory-unlock: opened"),
+                        Err(err) => self.log_line(&format!("memory-unlock: {err}")),
+                    }
+                }
                 true
             }
             Err(err) => {
@@ -553,6 +715,39 @@ impl HostInner {
         let _ = child.wait();
         *self.pid.lock().unwrap() = None;
         false
+    }
+
+    fn ensure_unlocked(&self) -> Result<(), String> {
+        if !encryption_enabled(&self.data_dir) {
+            return Ok(());
+        }
+        let key = match crate::keychain::OsSecretStore.get(&crate::keychain::OsSecretStore) {
+            Ok(Some(value)) if !value.trim().is_empty() => value,
+            Ok(_) => {
+                return Err(
+                    "Memory is encrypted, but the key is missing from the macOS Keychain or Windows Credential Manager."
+                        .into(),
+                );
+            }
+            Err(err) => return Err(err),
+        };
+        let deadline = Instant::now() + READY_TIMEOUT;
+        let mut last = "agent host is not running".to_string();
+        while Instant::now() < deadline {
+            match self.call_params_timeout(
+                "memory_unlock",
+                serde_json::json!({ "key": key.clone() }),
+                CALL_TIMEOUT,
+            ) {
+                Ok(_) => return Ok(()),
+                Err(err) if err == "agent host is not running" => {
+                    last = err;
+                    thread::sleep(Duration::from_millis(50));
+                }
+                Err(err) => return Err(crate::keychain::redact(&err, &key)),
+            }
+        }
+        Err(crate::keychain::redact(&last, &key))
     }
 
     fn call_params(&self, method: &str, params: serde_json::Value) -> Result<String, String> {
@@ -720,6 +915,19 @@ fn host_command(path: &Path, data_dir: &Path) -> Command {
         command.creation_flags(CREATE_NO_WINDOW);
     }
     command
+}
+
+fn encryption_enabled(data_dir: &Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(data_dir.join("memory-settings.json")) else {
+        return false;
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return false;
+    };
+    value
+        .get("encryptionEnabled")
+        .and_then(|item| item.as_bool())
+        .unwrap_or(false)
 }
 
 fn kill_pid(pid: u32) {
