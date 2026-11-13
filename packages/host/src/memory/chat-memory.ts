@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import {
   copyFileSync,
   existsSync,
@@ -205,6 +206,7 @@ export class ChatMemory implements ChatMemoryClient {
     this.file = memoryBankFile(options.dataDir);
     this.prefsPath = memorySettingsFile(options.dataDir);
     this.prefs = readPrefs(this.prefsPath);
+    this.reconcileEncryption();
     this.extractor = filteringExtractor(
       options.extractor ?? ollamaExtractor(options.model, options.host),
     );
@@ -365,32 +367,42 @@ export class ChatMemory implements ChatMemoryClient {
     const bank = this.requireBank();
     const library = bank.sweepJunk({ dryRun: true });
     const seen = new Set(library.candidates.map((item) => item.id));
-    const extra = this.list().flatMap((fact) => {
+    const junkIds = new Set(seen);
+    const extraFacts = this.list().flatMap((fact) => {
       const reason = transientFactReason(fact.text);
       if (reason == null || seen.has(fact.id)) {
         return [];
       }
+      seen.add(fact.id);
+      junkIds.add(fact.id);
       return [{ id: fact.id, text: fact.text, reason }];
     });
+    const derived = this.observationsFromJunk(junkIds, seen);
     const candidates = [
       ...library.candidates.map((item) => ({
         id: item.id,
         text: item.text,
         reason: item.reason,
       })),
-      ...extra,
+      ...extraFacts,
+      ...derived,
     ];
-    if (dryRun || candidates.length === 0) {
+    if (
+      dryRun ||
+      (library.candidates.length === 0 && extraFacts.length === 0)
+    ) {
       return { dryRun: true, candidates, deleted: 0 };
     }
     const applied = bank.sweepJunk({ dryRun: false });
-    if (extra.length > 0) {
-      bank.forgetMany(extra.map((item) => item.id));
+    let extraDeleted = 0;
+    if (extraFacts.length > 0) {
+      extraDeleted = bank.forgetMany(extraFacts.map((item) => item.id))
+        .removedFactIds.length;
     }
     return {
       dryRun: false,
       candidates,
-      deleted: applied.deleted + extra.length,
+      deleted: applied.deleted + extraDeleted,
     };
   }
 
@@ -601,10 +613,18 @@ export class ChatMemory implements ChatMemoryClient {
         // The sidecar files are absent when the bank was not using WAL.
       }
     }
-    this.prefs.encryptionEnabled = false;
     this.keyInUse = "";
     this.openError = "";
+    const sealed = bankLooksEncrypted(this.file);
+    if (!sealed) {
+      clearEncryptionMarker(this.file);
+    }
+    this.prefs.encryptionEnabled = sealed;
     this.writePrefs();
+    if (sealed) {
+      this.openError = MISSING_KEY_MESSAGE;
+      throw new Error(this.openError);
+    }
     try {
       this.open(undefined);
     } catch (error) {
@@ -636,6 +656,19 @@ export class ChatMemory implements ChatMemoryClient {
     this.closed = true;
     this.stopIdleReflect();
     this.closeBank();
+  }
+
+  /** The sqlite file decides encryption. A settings flag that disagrees is corrected. */
+  private reconcileEncryption(): void {
+    const sealed = bankLooksEncrypted(this.file);
+    if (!sealed) {
+      clearEncryptionMarker(this.file);
+    }
+    if (this.prefs.encryptionEnabled === sealed) {
+      return;
+    }
+    this.prefs.encryptionEnabled = sealed;
+    this.writePrefs();
   }
 
   private async keep(user: string, assistant: string): Promise<void> {
@@ -729,6 +762,46 @@ export class ChatMemory implements ChatMemoryClient {
       this.openError = this.publicError(error).message;
       this.bank = null;
     }
+  }
+
+  /** Observations that cite only junk. Deleting those facts removes them. */
+  private observationsFromJunk(
+    junkIds: Set<string>,
+    seen: Set<string>,
+  ): { id: string; text: string; reason: string }[] {
+    if (junkIds.size === 0) {
+      return [];
+    }
+    const snapshot = this.requireBank().graphSnapshot({
+      includeObservations: true,
+      limit: 1000,
+    });
+    const sources = new Map<string, string[]>();
+    for (const edge of snapshot.edges) {
+      if (edge.type !== "derived") {
+        continue;
+      }
+      const list = sources.get(edge.source) ?? [];
+      list.push(edge.target);
+      sources.set(edge.source, list);
+    }
+    const found: { id: string; text: string; reason: string }[] = [];
+    for (const node of snapshot.nodes) {
+      if (!node.derived || seen.has(node.id)) {
+        continue;
+      }
+      const cited = sources.get(node.id) ?? [];
+      if (cited.length === 0 || cited.some((id) => !junkIds.has(id))) {
+        continue;
+      }
+      seen.add(node.id);
+      found.push({
+        id: node.id,
+        text: node.label,
+        reason: "derived-from-junk",
+      });
+    }
+    return found;
   }
 
   private decorate(observations: ObservationRecord[]): MemoryFact[] {
@@ -881,6 +954,77 @@ function ollamaExtractor(
       );
     },
   };
+}
+
+/** Encryption is a key-check row plus ciphertext, not the settings flag. */
+function bankLooksEncrypted(file: string): boolean {
+  if (!existsSync(file)) {
+    return false;
+  }
+  let db: Database | null = null;
+  try {
+    db = new Database(file, { readonly: true });
+    const marker = db
+      .query("SELECT 1 AS n FROM schema_meta WHERE key = 'encryption' LIMIT 1")
+      .get() as { n: number } | null;
+    if (!marker) {
+      return false;
+    }
+    return ciphertextPresent(db);
+  } catch {
+    return false;
+  } finally {
+    db?.close();
+  }
+}
+
+function ciphertextPresent(db: Database): boolean {
+  const tables = [
+    "facts",
+    "sources",
+    "source_chunks",
+    "observations",
+    "entities",
+  ];
+  for (const table of tables) {
+    let columns: { name: string }[] = [];
+    try {
+      columns = db.query(`PRAGMA table_info(${table})`).all() as {
+        name: string;
+      }[];
+    } catch {
+      continue;
+    }
+    const encrypted = columns
+      .map((column) => column.name)
+      .filter((name) => name.endsWith("_enc"));
+    if (encrypted.length === 0) {
+      continue;
+    }
+    const clause = encrypted.map((name) => `${name} IS NOT NULL`).join(" OR ");
+    const row = db
+      .query(`SELECT 1 AS n FROM ${table} WHERE ${clause} LIMIT 1`)
+      .get() as { n: number } | null;
+    if (row) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function clearEncryptionMarker(file: string): void {
+  if (!existsSync(file)) {
+    return;
+  }
+  const db = new Database(file);
+  try {
+    db.exec("PRAGMA busy_timeout = 5000;");
+    db.query("DELETE FROM schema_meta WHERE key = 'encryption'").run();
+  } catch {
+    // The table is absent until the bank has been opened once.
+  } finally {
+    db.close();
+  }
 }
 
 function readPrefs(file: string): Prefs {

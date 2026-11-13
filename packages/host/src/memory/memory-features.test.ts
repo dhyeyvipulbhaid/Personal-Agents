@@ -1,5 +1,6 @@
+import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
-import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -518,6 +519,154 @@ test("retain skips page-state and assistant meta, and sweep lists them", async (
   }
 });
 
+const PAGE_JUNK = [
+  "The user attempted to navigate to example.com.xn--ivg, but the assistant stopped the action.",
+  "The Apple website is open and showcases a variety of products and services.",
+  "Apple's page also features streaming services like Apple TV for shows and sports...",
+  "The page promotes financial benefits through the Apple Card with cash back and Upgrade leasing options.",
+  "The Apple website is now open and displays products and services such as iPhones...",
+  "The webpage includes promotional messaging around holiday gift options available through Apple platforms.",
+];
+
+test("preview junk lists open pages, blocked navigation, and observations built only from them", async () => {
+  expect(transientFactReason("The user prefers Apple products.")).toBeNull();
+  expect(transientFactReason("The user likes green tea.")).toBeNull();
+  expect(transientFactReason("My dentist is Dr. Patel.")).toBeNull();
+  for (const text of PAGE_JUNK) {
+    expect(transientFactReason(text)).not.toBeNull();
+  }
+
+  const dir = mkdtempSync(join(tmpdir(), "pa-page-junk-"));
+  const memory = new ChatMemory({
+    dataDir: dir,
+    extractor: createFakeExtractor(() => [
+      ...PAGE_JUNK.map((text) => ({
+        text,
+        kind: "world" as const,
+        occurrenceTime: null,
+        entities: [],
+      })),
+      {
+        text: "The user prefers Apple products.",
+        kind: "world" as const,
+        occurrenceTime: null,
+        entities: [],
+      },
+      {
+        text: "My dentist is Dr. Patel.",
+        kind: "world" as const,
+        occurrenceTime: null,
+        entities: [],
+      },
+    ]),
+    reflector: createFakeReflector((input) => {
+      const junk = input.facts.filter(
+        (fact) => transientFactReason(fact.text) != null,
+      );
+      const kept = input.facts.filter(
+        (fact) => transientFactReason(fact.text) == null,
+      );
+      return [
+        {
+          text: "The open Apple pages are product promotions.",
+          confidence: 0.8,
+          sourceFactIds: junk.map((fact) => fact.id),
+        },
+        {
+          text: "The user wants Apple products.",
+          confidence: 0.9,
+          sourceFactIds: kept.map((fact) => fact.id),
+        },
+      ];
+    }),
+  });
+  try {
+    await memory.retainExchange("the apple site is on screen", "noted");
+    await memory.settle();
+    expect(
+      memory
+        .list()
+        .map((fact) => fact.text)
+        .sort(),
+    ).toEqual(["My dentist is Dr. Patel.", "The user prefers Apple products."]);
+    for (const text of PAGE_JUNK) {
+      await memory.remember(text);
+    }
+    await memory.reflect({});
+    const preview = memory.sweep(true);
+    expect(preview.dryRun).toBe(true);
+    expect(preview.deleted).toBe(0);
+    expect(preview.candidates.map((item) => item.text).sort()).toEqual(
+      [...PAGE_JUNK, "The open Apple pages are product promotions."].sort(),
+    );
+    expect(
+      preview.candidates.find((item) =>
+        item.text.startsWith("The open Apple pages"),
+      )?.reason,
+    ).toBe("derived-from-junk");
+    memory.sweep(false);
+    expect(
+      memory
+        .list()
+        .map((fact) => fact.text)
+        .sort(),
+    ).toEqual(["My dentist is Dr. Patel.", "The user prefers Apple products."]);
+    expect((await memory.observations()).map((item) => item.text)).toEqual([
+      "The user wants Apple products.",
+    ]);
+  } finally {
+    memory.close();
+  }
+});
+
+test("a plaintext bank with a stale encryption flag still lists and draws facts", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pa-stale-flag-"));
+  const memory = new ChatMemory({
+    dataDir: dir,
+    extractor: createFakeExtractor(() => []),
+  });
+  try {
+    for (let index = 0; index < 26; index += 1) {
+      await memory.remember(`Restored fact ${index} stays on this machine.`);
+    }
+  } finally {
+    memory.close();
+  }
+  const db = new Database(join(dir, "memory-bank.sqlite"));
+  db.query(
+    "INSERT INTO schema_meta (key, value) VALUES ('encryption', 'c3RhbGU=')",
+  ).run();
+  db.close();
+  writeFileSync(
+    memorySettingsFile(dir),
+    `${JSON.stringify({
+      embeddingModel: "nomic-embed-text",
+      includeObservations: true,
+      encryptionEnabled: true,
+    })}\n`,
+  );
+  const restored = new ChatMemory({
+    dataDir: dir,
+    extractor: createFakeExtractor(() => []),
+  });
+  try {
+    expect(restored.status().encryptionEnabled).toBe(false);
+    expect(restored.status().error).toBe("");
+    expect(restored.list()).toHaveLength(26);
+    expect((await restored.graph()).nodes).toHaveLength(26);
+    const check = new Database(join(dir, "memory-bank.sqlite"), {
+      readonly: true,
+    });
+    const marker = check
+      .query("SELECT 1 AS n FROM schema_meta WHERE key = 'encryption'")
+      .get();
+    check.close();
+    expect(marker).toBeNull();
+  } finally {
+    restored.close();
+  }
+});
+
 test("encrypt writes one backup and a later call does not write another", async () => {
   const dir = mkdtempSync(join(tmpdir(), "pa-one-backup-"));
   const key = randomKey();
@@ -554,6 +703,13 @@ test("a missing key can be recovered from the plaintext backup", async () => {
   } finally {
     memory.close();
   }
+  const backup = new Database(join(dir, "memory-bank.sqlite.bak"));
+  backup
+    .query(
+      "INSERT INTO schema_meta (key, value) VALUES ('encryption', 'c3RhbGU=')",
+    )
+    .run();
+  backup.close();
   const locked = new ChatMemory({
     dataDir: dir,
     extractor: createFakeExtractor(() => []),
@@ -568,6 +724,12 @@ test("a missing key can be recovered from the plaintext backup", async () => {
     expect(locked.status().error).toBe("");
     expect(locked.list().map((fact) => fact.text)).toEqual([sentence]);
     expect(readFileSync(locked.file).includes(sentence)).toBe(true);
+    const check = new Database(locked.file, { readonly: true });
+    const marker = check
+      .query("SELECT 1 AS n FROM schema_meta WHERE key = 'encryption'")
+      .get();
+    check.close();
+    expect(marker).toBeNull();
   } finally {
     locked.close();
   }

@@ -11,4 +11,9 @@ test("reflect now reloads observations, clears the status, and surfaces errors",
   expect(handler).toContain("await showObservations();");
   expect(handler).toContain('reflectStatus.textContent = "";');
   expect(handler).toContain("reflectStatus.textContent = messageOf(error);");
+  expect(source).toContain("showGraphNote(detail)");
+  const page = await Bun.file(
+    new URL("../ui/memory.html", import.meta.url),
+  ).text();
+  expect(page).toContain('id="graph-status"');
 });

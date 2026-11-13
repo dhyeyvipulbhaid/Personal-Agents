@@ -44,6 +44,8 @@ type Simulation = {
   panBy(dx: number, dy: number): void;
   zoomAt(factor: number, x: number, y: number): void;
   toScreen(x: number, y: number): { x: number; y: number };
+  fit(width: number, height: number): void;
+  radiusOf(node: Node): number;
   hit(x: number, y: number): { id: string } | null;
   moveNode(
     id: string,
@@ -163,6 +165,47 @@ test("thirty nodes cool down and stay spread out", () => {
     }
   }
   expect(nearest).toBeGreaterThan(18);
+});
+
+test("twenty six facts render inside the viewport", () => {
+  const nodes = Array.from({ length: 26 }, (_, index) => ({
+    id: `fact-${index}`,
+    label: `Restored fact ${index} stays on this machine`,
+    recency: 0.4 + (index % 5) / 10,
+    sourceFactCount: 1,
+    derived: false,
+  }));
+  const edges = nodes.slice(1).map((node, index) => ({
+    source: nodes[index]?.id,
+    target: node.id,
+    type: "temporal",
+    weight: 1,
+  }));
+  const simulation = api.createSimulation({ nodes, edges });
+  for (let tick = 0; tick < 500 && !simulation.isSettled(); tick += 1) {
+    simulation.step();
+  }
+  const width = 800;
+  const height = 480;
+  simulation.fit(width, height);
+  let visible = 0;
+  for (const node of simulation.nodes) {
+    const point = simulation.toScreen(node.x, node.y);
+    const screenX = width / 2 + point.x;
+    const screenY = height / 2 + point.y;
+    const radius = simulation.radiusOf(node);
+    expect(Number.isFinite(screenX)).toBe(true);
+    expect(Number.isFinite(screenY)).toBe(true);
+    if (
+      screenX >= radius &&
+      screenX <= width - radius &&
+      screenY >= radius &&
+      screenY <= height - radius
+    ) {
+      visible += 1;
+    }
+  }
+  expect(visible).toBe(26);
 });
 
 test("a refresh keeps placed nodes and only seeds new ones", () => {
