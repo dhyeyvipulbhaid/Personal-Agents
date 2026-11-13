@@ -21,29 +21,46 @@ export function transientFactReason(text: string): TransientReason | null {
 
 function isPageState(text: string): boolean {
   const lower = text.toLowerCase();
-  const aboutAPage =
+  if (isNavigationState(lower)) {
+    return true;
+  }
+  if (!namesAPage(lower)) {
+    return false;
+  }
+  return isOpenPage(lower) || describesPageContents(lower);
+}
+
+function namesAPage(lower: string): boolean {
+  return (
     /\b(?:website|web site|webpage|web page|homepage|home page)\b/.test(
       lower,
-    ) || /\b(?:site|page) is open\b/.test(lower);
-  const showsContent =
-    /\b(?:is|are|was|were)\s+open\b/.test(lower) ||
-    /\b(?:displays?|displaying|shows?|showing|features?|featuring)\b/.test(
+    ) || /\b(?:site|page)\b/.test(lower)
+  );
+}
+
+function isOpenPage(lower: string): boolean {
+  return /\b(?:is|are|was|were)\s+(?:now\s+)?open\b/.test(lower);
+}
+
+function describesPageContents(lower: string): boolean {
+  return (
+    /\b(?:features?|featuring|promotes?|promoting|includes?|including|displays?|displaying|shows?|showing|showcases?|showcasing)\b/.test(
       lower,
     ) ||
     /\bcontains the text\b/.test(lower) ||
-    /\bthe text\b/.test(lower);
-  if (
-    /\b(?:website|web site|webpage|web page|homepage|home page)\b/.test(
-      lower,
-    ) &&
-    showsContent
-  ) {
+    /\bthe text\b/.test(lower)
+  );
+}
+
+function isNavigationState(lower: string): boolean {
+  if (/\b(?:attempted|tried) to navigate\b/.test(lower)) {
     return true;
   }
-  if (/\bhomepage of\b/.test(lower) && showsContent) {
-    return true;
-  }
-  return aboutAPage && /\bis open\b/.test(lower);
+  return (
+    /\bassistant\b/.test(lower) &&
+    /\b(?:stopped|blocked)\b/.test(lower) &&
+    /\b(?:action|navigation)\b/.test(lower)
+  );
 }
 
 function isAssistantMeta(text: string): boolean {

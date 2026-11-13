@@ -263,14 +263,24 @@
     }
 
     function fit(width, height) {
-      if (nodes.length === 0) {
+      const finite = nodes.filter(
+        (node) => Number.isFinite(node.x) && Number.isFinite(node.y),
+      );
+      if (
+        finite.length === 0 ||
+        !Number.isFinite(width) ||
+        !Number.isFinite(height)
+      ) {
+        zoom = 1;
+        panX = 0;
+        panY = 0;
         return;
       }
       let minX = Infinity;
       let minY = Infinity;
       let maxX = -Infinity;
       let maxY = -Infinity;
-      for (const node of nodes) {
+      for (const node of finite) {
         const radius = radiusOf(node);
         minX = Math.min(minX, node.x - radius);
         minY = Math.min(minY, node.y - radius);
@@ -290,6 +300,15 @@
       const midY = (minY + maxY) / 2;
       panX = -midX * zoom;
       panY = -midY * zoom;
+      if (
+        !Number.isFinite(panX) ||
+        !Number.isFinite(panY) ||
+        !Number.isFinite(zoom)
+      ) {
+        zoom = 1;
+        panX = 0;
+        panY = 0;
+      }
     }
 
     function setPaused(value) {
@@ -317,6 +336,15 @@
     }
 
     function toScreen(x, y) {
+      if (
+        !Number.isFinite(x) ||
+        !Number.isFinite(y) ||
+        !Number.isFinite(zoom) ||
+        !Number.isFinite(panX) ||
+        !Number.isFinite(panY)
+      ) {
+        return { x: 0, y: 0 };
+      }
       return { x: x * zoom + panX, y: y * zoom + panY };
     }
 

@@ -36,8 +36,16 @@ function isKeyError(detail) {
   );
 }
 
+function showGraphNote(detail) {
+  const node = document.getElementById("graph-status");
+  if (node) {
+    node.textContent = detail;
+  }
+}
+
 function noteKeyProblem(detail) {
   encryptionStatus.textContent = detail;
+  showGraphNote(detail);
   const restore = document.getElementById("restore-backup");
   if (restore) {
     restore.hidden = !/missing from the macOS Keychain/i.test(detail);
@@ -426,6 +434,8 @@ async function showGraph() {
     if (!document.getElementById("edge-filters").childElementCount) {
       renderLegend();
     }
+    const count = Array.isArray(snapshot.nodes) ? snapshot.nodes.length : 0;
+    showGraphNote(count === 0 ? "No facts to draw yet." : "");
     if (simulation.isSettled()) {
       drawGraph();
     } else {
@@ -436,6 +446,7 @@ async function showGraph() {
     if (/unexpected command|Method not found/i.test(detail)) {
       return;
     }
+    showGraphNote(detail);
     if (isKeyError(detail)) {
       noteKeyProblem(detail);
       return;
