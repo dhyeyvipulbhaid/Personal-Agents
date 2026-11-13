@@ -295,7 +295,9 @@ async fn call_memory(
 ) -> Result<String, String> {
     let host = host.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        host.ensure_unlocked()?;
+        if method != "memory_settings" {
+            host.ensure_unlocked()?;
+        }
         match params {
             Some(params) => host.call_params_when_ready_timeout(method, params, timeout),
             None => host.call_when_ready(method),

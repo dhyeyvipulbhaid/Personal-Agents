@@ -3,6 +3,7 @@ import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import {
   copyFileSync,
+  mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
@@ -999,8 +1000,79 @@ test("a denied keychain leaves the plaintext bank usable", async () => {
     expect(kept.encryptionChoice).toBe("off");
     expect(kept.encryptionPrompt).toBe(false);
     expect(memory.list().map((fact) => fact.text)).toEqual(["Keep me"]);
+    expect(
+      JSON.parse(readFileSync(memorySettingsFile(dir), "utf8"))
+        .includeObservations,
+    ).toBe(true);
   } finally {
     memory.close();
+  }
+});
+
+test("passphrase encrypt through the handler survives an open WAL bank and then unlocks", async () => {
+  const root = mkdtempSync(join(tmpdir(), "Library "));
+  const dir = join(root, "Application Support", "com.personalagents.desktop");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    memorySettingsFile(dir),
+    `${JSON.stringify({
+      embeddingModel: "nomic-embed-text",
+      includeObservations: true,
+      encryptionEnabled: false,
+    })}\n`,
+  );
+  const key = randomKey();
+  const memory = new ChatMemory({
+    dataDir: dir,
+    extractor: createFakeExtractor(() => []),
+  });
+  const app = new DesktopApp({
+    dataDir: dir,
+    memory,
+    adapter: silentAdapter(),
+    probe: async () => "stopped",
+  });
+  await app.start();
+  const holder = new Database(memory.file);
+  try {
+    await memory.remember("Keep me");
+    holder.exec("BEGIN");
+    holder.query("SELECT text FROM facts").get();
+    const status = JSON.parse(
+      await app.methods().memory_adopt_encryption({
+        key,
+        mode: "passphrase",
+        force: true,
+      }),
+    ) as { encryptionEnabled: boolean; includeObservations: boolean };
+    expect(status.encryptionEnabled).toBe(true);
+    expect(status.includeObservations).toBe(true);
+    expect(memory.list().map((fact) => fact.text)).toEqual(["Keep me"]);
+    expect(
+      JSON.parse(readFileSync(memorySettingsFile(dir), "utf8"))
+        .includeObservations,
+    ).toBe(true);
+  } catch (error) {
+    expect(memory.list().map((fact) => fact.text)).toEqual(["Keep me"]);
+    throw error;
+  } finally {
+    holder.exec("ROLLBACK");
+    holder.close();
+    memory.close();
+  }
+  const locked = new ChatMemory({
+    dataDir: dir,
+    extractor: createFakeExtractor(() => []),
+  });
+  try {
+    expect(locked.memoryLock()).toBe(
+      "Memory is locked. Unlock it on the Memory page.",
+    );
+    locked.unlock(key);
+    expect(locked.memoryLock()).toBe("");
+    expect(locked.list().map((fact) => fact.text)).toEqual(["Keep me"]);
+  } finally {
+    locked.close();
   }
 });
 

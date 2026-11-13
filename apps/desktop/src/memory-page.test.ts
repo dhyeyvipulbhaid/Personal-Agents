@@ -40,4 +40,11 @@ test("reflect now reloads observations, clears the status, and surfaces errors",
     source.indexOf('invoke("memory_update"'),
   );
   expect(one).toContain("showGraph()");
+  expect(page).toContain('id="choice-passphrase-input" type="password"');
+  expect(page).toContain('id="choice-passphrase-confirm" type="password"');
+  expect(page).toContain('id="unlock-passphrase-input" type="password"');
+  expect(source).toContain("passphraseProblem");
+  expect(source).toContain(
+    "setEncryptChecked(encrypt, settings.encryptionEnabled === true)",
+  );
 });

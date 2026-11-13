@@ -57,7 +57,7 @@ function noteKeyProblem(detail) {
   if (retry) {
     retry.hidden = !denied;
   }
-  const unlock = document.getElementById("unlock-passphrase");
+  const unlock = document.getElementById("encryption-unlock");
   if (unlock) {
     unlock.hidden = !needsPassphrase;
   }
@@ -261,11 +261,19 @@ async function showSettings() {
     document.getElementById("include-observations").checked =
       settings.includeObservations !== false;
     const encrypt = document.getElementById("encrypt-memory");
-    encrypt.checked = settings.encryptionEnabled === true;
+    setEncryptChecked(encrypt, settings.encryptionEnabled === true);
     encrypt.disabled = false;
     const choice = document.getElementById("encryption-choice");
     if (choice) {
       choice.hidden = settings.encryptionPrompt !== true;
+    }
+    const locked =
+      settings.encryptionChoice === "passphrase" &&
+      typeof settings.error === "string" &&
+      settings.error.length > 0;
+    const unlockPanel = document.getElementById("encryption-unlock");
+    if (unlockPanel) {
+      unlockPanel.hidden = !locked;
     }
     const restore = document.getElementById("restore-backup");
     if (settings.error && isKeyError(settings.error)) {
@@ -593,11 +601,17 @@ document
     }
     const usePassphrase = document.getElementById("use-passphrase").checked;
     const passphrase = document.getElementById("memory-passphrase").value;
-    if (usePassphrase && passphrase.trim().length < 8) {
-      setEncryptChecked(box, false);
-      encryptionStatus.textContent =
-        "Use a passphrase of at least 8 characters.";
-      return;
+    const confirmed = document.getElementById(
+      "memory-passphrase-confirm",
+    ).value;
+    const passphraseError = document.getElementById("memory-passphrase-error");
+    if (usePassphrase) {
+      const problem = passphraseProblem(passphrase, confirmed);
+      passphraseError.textContent = problem;
+      if (problem) {
+        setEncryptChecked(box, false);
+        return;
+      }
     }
     encryptionBusy = true;
     encryptionStatus.textContent = "Encrypting the memory file…";
@@ -655,23 +669,73 @@ document.getElementById("choice-stay-plain").addEventListener("click", () => {
     });
 });
 
-document.getElementById("choice-passphrase").addEventListener("click", () => {
-  const passphrase = document.getElementById("memory-passphrase").value;
+function passphraseProblem(passphrase, confirmed) {
   if (passphrase.trim().length < 8) {
-    encryptionStatus.textContent = "Use a passphrase of at least 8 characters.";
-    return;
+    return "Use a passphrase of at least 8 characters.";
   }
-  window.pa
-    .invoke("memory_enable_passphrase", { passphrase })
-    .then(async () => {
-      document.getElementById("memory-passphrase").value = "";
-      document.getElementById("encryption-choice").hidden = true;
-      setEncryptChecked(document.getElementById("encrypt-memory"), true);
-      encryptionStatus.textContent = "Memory is encrypted with a passphrase.";
-      await showFacts();
-      return showGraph();
-    })
-    .catch((error) => noteKeyProblem(messageOf(error)));
+  if (passphrase !== confirmed) {
+    return "The passphrases do not match.";
+  }
+  return "";
+}
+
+function wirePassphrasePair(inputId, confirmId, toggleId, errorId, submit) {
+  const input = document.getElementById(inputId);
+  const confirm = document.getElementById(confirmId);
+  const toggle = document.getElementById(toggleId);
+  const error = document.getElementById(errorId);
+  toggle.addEventListener("click", () => {
+    const show = input.type === "password";
+    input.type = show ? "text" : "password";
+    confirm.type = show ? "text" : "password";
+    toggle.textContent = show ? "Hide" : "Show";
+  });
+  const run = () => {
+    const problem = passphraseProblem(input.value, confirm.value);
+    error.textContent = problem;
+    if (!problem) {
+      submit(input.value);
+    }
+  };
+  for (const field of [input, confirm]) {
+    field.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") {
+        return;
+      }
+      event.preventDefault();
+      run();
+    });
+  }
+  return run;
+}
+
+const submitChoicePassphrase = wirePassphrasePair(
+  "choice-passphrase-input",
+  "choice-passphrase-confirm",
+  "choice-passphrase-toggle",
+  "choice-passphrase-error",
+  (passphrase) => {
+    window.pa
+      .invoke("memory_enable_passphrase", { passphrase })
+      .then(async () => {
+        document.getElementById("choice-passphrase-input").value = "";
+        document.getElementById("choice-passphrase-confirm").value = "";
+        document.getElementById("encryption-choice").hidden = true;
+        setEncryptChecked(document.getElementById("encrypt-memory"), true);
+        encryptionStatus.textContent = "Memory is encrypted with a passphrase.";
+        await showFacts();
+        await showSettings();
+        return showGraph();
+      })
+      .catch((error) => {
+        document.getElementById("choice-passphrase-error").textContent =
+          messageOf(error);
+      });
+  },
+);
+
+document.getElementById("choice-passphrase").addEventListener("click", () => {
+  submitChoicePassphrase();
 });
 
 document.getElementById("retry-keychain").addEventListener("click", () => {
@@ -689,20 +753,51 @@ document.getElementById("retry-keychain").addEventListener("click", () => {
     .catch((error) => noteKeyProblem(messageOf(error)));
 });
 
-document.getElementById("unlock-passphrase").addEventListener("click", () => {
-  const passphrase = document.getElementById("memory-passphrase").value;
+function submitUnlock() {
+  const input = document.getElementById("unlock-passphrase-input");
+  const error = document.getElementById("unlock-passphrase-error");
+  if (input.value.trim().length < 8) {
+    error.textContent = "Use a passphrase of at least 8 characters.";
+    return;
+  }
+  error.textContent = "";
   window.pa
-    .invoke("memory_unlock_passphrase", { passphrase })
+    .invoke("memory_unlock_passphrase", { passphrase: input.value })
     .then(async () => {
-      document.getElementById("memory-passphrase").value = "";
-      document.getElementById("unlock-passphrase").hidden = true;
+      input.value = "";
+      document.getElementById("encryption-unlock").hidden = true;
       encryptionStatus.textContent = "Memory is unlocked.";
       await showFacts();
       await showObservations();
+      await showSettings();
       return showGraph();
     })
-    .catch((error) => noteKeyProblem(messageOf(error)));
+    .catch((errorValue) => {
+      error.textContent = messageOf(errorValue);
+    });
+}
+
+document.getElementById("unlock-passphrase").addEventListener("click", () => {
+  submitUnlock();
 });
+document
+  .getElementById("unlock-passphrase-input")
+  .addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") {
+      return;
+    }
+    event.preventDefault();
+    submitUnlock();
+  });
+document
+  .getElementById("unlock-passphrase-toggle")
+  .addEventListener("click", () => {
+    const input = document.getElementById("unlock-passphrase-input");
+    const toggle = document.getElementById("unlock-passphrase-toggle");
+    const show = input.type === "password";
+    input.type = show ? "text" : "password";
+    toggle.textContent = show ? "Hide" : "Show";
+  });
 
 document.getElementById("restore-backup").addEventListener("click", () => {
   encryptionStatus.textContent = "Restoring the plaintext backup…";
