@@ -263,6 +263,39 @@ test("saving a fact on the memory page writes through the chat bank", async () =
   }
 });
 
+test("a plain question does not offer a browser visit unless the user asks to look it up", async () => {
+  const seen: ChatRequest[] = [];
+  const { app, methods } = await harness(async (request) => {
+    seen.push(request);
+    return { text: "I don't know who Pepper is." };
+  });
+  try {
+    const state = JSON.parse(
+      await methods.chat_send({ text: "Who is Pepper?" }),
+    ) as { messages: { role: string; text: string }[] };
+    expectBrowseOnlyWhenAsked(
+      seen.at(-1)?.messages.find((message) => message.role === "system")
+        ?.content,
+    );
+    const names = seen[0]?.tools?.map((tool) => tool.function.name) ?? [];
+    expect(names).toContain("browser.read");
+    expect(names).toContain("browser.navigate");
+    expect(names).toContain("browser.click");
+    expect(
+      state.messages.filter((message) => message.role === "approval"),
+    ).toHaveLength(0);
+    expect(JSON.parse(await methods.approvals({}))).toEqual([]);
+    expect(
+      state.messages
+        .filter((message) => message.role === "assistant")
+        .map((message) => message.text)
+        .join("\n"),
+    ).toBe("I don't know who Pepper is.");
+  } finally {
+    app.close();
+  }
+});
+
 test("a chat request sends tools to ollama and runs the tool call", async () => {
   const bodies: {
     model?: string;
@@ -365,11 +398,10 @@ test("a chat request sends tools to ollama and runs the tool call", async () => 
     expect(bodies[0]?.model).toBe("qwen3:4b");
     expect(offered).toContain("browser.open");
     expect(offered).toContain("mail.summary");
-    expect(
-      bodies[0]?.messages?.some(
-        (message) => message.role === "system" && /tool/i.test(message.content),
-      ),
-    ).toBe(true);
+    expectBrowseOnlyWhenAsked(
+      bodies[0]?.messages?.find((message) => message.role === "system")
+        ?.content,
+    );
     expect(
       bodies.some((body) =>
         body.messages?.some(
@@ -1053,6 +1085,20 @@ function toolCallResponse(): Response {
       done: true,
     }),
   );
+}
+
+function expectBrowseOnlyWhenAsked(content: string | undefined): void {
+  expect(content).toContain(
+    "Use a browser tool only when the user explicitly asks to look something up, search, open, visit, read a page, or go to a URL.",
+  );
+  expect(content).toContain(
+    "If they only ask a question, answer from memory and your own knowledge, or say you don't know.",
+  );
+  expect(content).toContain(
+    "Do not request a page visit just because the answer is missing.",
+  );
+  expect(content).toContain("Browser actions still wait for approval.");
+  expect(content).toContain("Do not say you cannot browse.");
 }
 
 function textResponse(content: string): Response {
