@@ -1177,6 +1177,9 @@ function expectBrowseOnlyWhenAsked(content: string | undefined): void {
   );
   expect(content).toContain("Browser actions still wait for approval.");
   expect(content).toContain("Do not say you cannot browse.");
+  expect(content).toContain(
+    "If a browser tool result includes no page text, say only whether the page opened. Do not describe the page.",
+  );
 }
 
 function textResponse(content: string): Response {

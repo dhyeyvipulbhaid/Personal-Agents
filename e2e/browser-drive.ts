@@ -153,12 +153,20 @@ const app = new DesktopApp({
   chromePath: "chrome",
   browserConnect: async () => {
     pageState.connects += 1;
+    let href = "about:blank";
     return {
       async send(method: string, params?: Record<string, unknown>) {
+        if (method === "Page.navigate") {
+          href = String(params?.url ?? href);
+          return {};
+        }
         if (method !== "Runtime.evaluate") {
           return {};
         }
         const expression = String(params?.expression ?? "");
+        if (expression.includes("location.href")) {
+          return { result: { value: href } };
+        }
         return {
           result: {
             value: new Function(

@@ -58,26 +58,37 @@ const app = new DesktopApp({
   probe: async () => "running",
   memoryExtractor: { extract: () => [] },
   chromePath: "chrome",
-  browserConnect: async () => ({
-    async send(method: string, params?: Record<string, unknown>) {
-      if (method === "Page.captureScreenshot") {
-        const clip = params?.clip as { width?: number } | undefined;
-        if (
-          params?.format !== "jpeg" ||
-          params?.quality !== 40 ||
-          clip?.width !== 480
-        ) {
-          throw new Error(`thumbnail params ${JSON.stringify(params)}`);
+  browserConnect: async () => {
+    let href = "about:blank";
+    return {
+      async send(method: string, params?: Record<string, unknown>) {
+        if (method === "Page.navigate") {
+          href = String(params?.url ?? href);
+          return {};
         }
-        return { data: "abc" };
-      }
-      if (method === "Runtime.evaluate") {
-        return { result: { value: "complete" } };
-      }
-      return {};
-    },
-    async close() {},
-  }),
+        if (method === "Page.captureScreenshot") {
+          const clip = params?.clip as { width?: number } | undefined;
+          if (
+            params?.format !== "jpeg" ||
+            params?.quality !== 40 ||
+            clip?.width !== 480
+          ) {
+            throw new Error(`thumbnail params ${JSON.stringify(params)}`);
+          }
+          return { data: "abc" };
+        }
+        if (method === "Runtime.evaluate") {
+          const expression = String(params?.expression ?? "");
+          if (expression.includes("location.href")) {
+            return { result: { value: href } };
+          }
+          return { result: { value: "complete" } };
+        }
+        return {};
+      },
+      async close() {},
+    };
+  },
 });
 await app.start();
 const methods = app.methods();
