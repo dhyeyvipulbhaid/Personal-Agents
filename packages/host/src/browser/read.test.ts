@@ -41,6 +41,17 @@ test("readable text decodes entities and trims to the model limit", () => {
   expect(read.text).not.toContain("Tom's notes");
 });
 
+test("nav labels are dropped from the page text", () => {
+  const read = readableFromHtml(
+    "<title>Apple</title><main><h1>Home</h1><p>Apple HomeView is designed for life at home. Learn more Buy Gifts Item 1 Item 2 Stream now</p></main>",
+  );
+  expect(read.text).toContain("Apple HomeView is designed for life at home.");
+  expect(read.text).not.toMatch(/\blearn more\b/i);
+  expect(read.text).not.toMatch(/\bbuy\b/i);
+  expect(read.text).not.toMatch(/\bitem 1\b/i);
+  expect(read.text).not.toMatch(/\bstream now\b/i);
+});
+
 test("a page without main still returns the body text", () => {
   const read = readableFromHtml(
     "<title>Notes</title><body><h1>Notes</h1><p>Bring the ledger.</p></body>",

@@ -1437,6 +1437,60 @@ test("reading a named site does not ask again and does not say it opened", async
   }
 });
 
+test("a pasted page is not shown as the answer", async () => {
+  const originalFetch = globalThis.fetch;
+  const story =
+    "Apple HomeView is designed for life at home. The kitchen section covers cooking. The living room section covers entertainment.";
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    if (String(input).includes("apple.com")) {
+      return new Response(`<title>Apple</title><main><p>${story}</p></main>`);
+    }
+    return originalFetch(input);
+  }) as typeof fetch;
+  const app = new DesktopApp({
+    dataDir: mkdtempSync(join(tmpdir(), "pa-read-echo-")),
+    adapter: {
+      async listModels() {
+        return [];
+      },
+      async chat(request) {
+        const notes =
+          request.messages.find((message) =>
+            message.content.startsWith("Page notes from"),
+          )?.content ?? "";
+        const story = notes.replace(/^Page notes from \S+\n/, "");
+        return {
+          text: `${story}\nVisit apple.com for more information.`,
+        };
+      },
+      async structured<T>(): Promise<T> {
+        return {} as T;
+      },
+    },
+    probe: async () => "running",
+    memoryExtractor: createFakeExtractor(() => []),
+    chromePath: "chrome",
+    browserConnect: async () => pageClient([]),
+  });
+  await app.start();
+  const methods = app.methods();
+  try {
+    const state = JSON.parse(
+      await methods.chat_send({ text: "Read apple.com" }),
+    ) as { messages: { role: string; text: string }[] };
+    const reply = state.messages
+      .filter((message) => message.role === "assistant")
+      .at(-1)?.text;
+    expect(reply).toContain("I read apple.com but couldn't summarize it.");
+    expect(reply).toContain("https://apple.com/");
+    expect(reply).not.toContain("Apple HomeView");
+    expect(reply).not.toContain("Visit apple.com for more information.");
+  } finally {
+    globalThis.fetch = originalFetch;
+    app.close();
+  }
+});
+
 test("a failed background read names the link and does not invent the page", async () => {
   const urls: string[] = [];
   const originalFetch = globalThis.fetch;

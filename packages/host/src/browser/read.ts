@@ -33,7 +33,28 @@ export function readableFromHtml(html: string): ReadablePage {
     .replace(/<nav\b[^>]*>[\s\S]*?<\/nav>/gi, " ")
     .replace(/<footer\b[^>]*>[\s\S]*?<\/footer>/gi, " ")
     .replace(/<aside\b[^>]*>[\s\S]*?<\/aside>/gi, " ");
-  return { title, headings, text: trimToLimit(plain(prose)) };
+  return {
+    title,
+    headings: headings.filter((heading) => !navNoise(heading)),
+    text: trimToLimit(withoutNavNoise(plain(prose))),
+  };
+}
+
+function navNoise(value: string): boolean {
+  return /^(?:learn more|buy|shop now|stream now|watch now|watch the film|order now|pre-order|explore|see more)$/i.test(
+    value.trim(),
+  );
+}
+
+function withoutNavNoise(text: string): string {
+  return text
+    .replace(
+      /\b(?:learn more|buy|shop now|stream now|watch now|watch the film|order now|pre-order|explore|see more)\b/gi,
+      " ",
+    )
+    .replace(/\bitem\s+\d+\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function plain(value: string): string {

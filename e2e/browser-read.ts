@@ -43,6 +43,15 @@ const appleStarted = new Promise<void>((resolve) => {
 const appleGate = new Promise<void>((resolve) => {
   releaseApple = resolve;
 });
+let releaseNamed = () => {};
+let markNamed = () => {};
+const namedStarted = new Promise<void>((resolve) => {
+  markNamed = resolve;
+});
+const namedGate = new Promise<void>((resolve) => {
+  releaseNamed = resolve;
+});
+let appleReads = 0;
 const adapter: ModelAdapter = {
   async listModels() {
     return [
@@ -71,10 +80,22 @@ const adapter: ModelAdapter = {
       .map((message) => message.content)
       .join("\n");
     if (pageText.includes("Live store text")) {
-      markApple();
-      await appleGate;
+      appleReads += 1;
+      if (appleReads === 1) {
+        markApple();
+        await appleGate;
+        return {
+          text: "The Apple website is open and displays a range of products.",
+        };
+      }
+      markNamed();
+      await namedGate;
+      const notes =
+        request.messages.find((message) =>
+          message.content.startsWith("Page notes from"),
+        )?.content ?? pageText;
       return {
-        text: "The Apple website is open and displays a range of products.",
+        text: `${notes}\nVisit apple.com for more information.`,
       };
     }
     if (pageText.includes("illustrative examples in documents")) {
@@ -167,7 +188,9 @@ try {
     .locator(".approval-status", { hasText: "Read example.com" })
     .waitFor();
   await answerStarted;
-  await page.locator("[data-thinking]", { hasText: "Thinking…" }).waitFor();
+  await page
+    .locator("[data-thinking]", { hasText: "Writing answer…" })
+    .waitFor();
   const send = page.locator("#send-button");
   const label = (await send.textContent())?.trim();
   if (label === "Send" && !(await send.isDisabled())) {
@@ -193,7 +216,9 @@ try {
   const read = page.locator(".approval-status", { hasText: "Read apple.com" });
   await read.waitFor();
   await appleStarted;
-  const thinking = page.locator("[data-thinking]", { hasText: "Thinking…" });
+  const thinking = page.locator("[data-thinking]", {
+    hasText: "Writing answer…",
+  });
   await thinking.waitFor();
   if ((await page.getByRole("button", { name: "Send" }).count()) !== 0) {
     throw new Error("Send was active while the answer was still generating");
@@ -218,9 +243,40 @@ try {
     throw new Error("a second approval was still waiting");
   }
   await page.getByRole("button", { name: "Send" }).waitFor();
+
+  await page.locator("#draft").fill("Read apple.com");
+  await page.getByRole("button", { name: "Send" }).click();
+  const named = page
+    .locator(".approval-status", { hasText: "Read apple.com" })
+    .last();
+  await named.waitFor();
+  await namedStarted;
+  const writing = page.locator("[data-thinking]", {
+    hasText: "Writing answer…",
+  });
+  await writing.waitFor();
+  if ((await page.getByRole("button", { name: "Send" }).count()) !== 0) {
+    throw new Error("Send was active while the named read was still writing");
+  }
+  const namedBox = await named.boundingBox();
+  const writingBox = await writing.boundingBox();
+  if (!namedBox || !writingBox || namedBox.y >= writingBox.y) {
+    throw new Error("Writing answer was not under the read line");
+  }
+  releaseNamed();
+  const summary = page.locator(".bubble.assistant").last();
+  await summary.getByRole("link", { name: "apple.com" }).waitFor();
+  const summaryText = await summary.innerText();
+  if (!summaryText.includes("couldn't summarize")) {
+    throw new Error(`the page was pasted: ${summaryText}`);
+  }
+  if (summaryText.includes("Live store text")) {
+    throw new Error("the answer included the raw page");
+  }
 } finally {
   releaseAnswer();
   releaseApple();
+  releaseNamed();
   globalThis.fetch = originalFetch;
   await browser.close();
   app.close();
