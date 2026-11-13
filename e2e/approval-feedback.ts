@@ -118,7 +118,7 @@ try {
     throw new Error("Thinking stayed after the card");
   }
   await page.getByRole("button", { name: "Approve" }).click();
-  await page.getByText("Opening example.com…").waitFor();
+  await page.getByText("Reading example.com…").waitFor();
   if ((await page.getByRole("button", { name: "Approve" }).count()) !== 0) {
     throw new Error("approve stayed clickable");
   }
@@ -132,7 +132,7 @@ try {
   });
   await answer.waitFor();
   const status = page.locator(".approval-status", {
-    hasText: "Opened example.com",
+    hasText: "Read example.com",
   });
   await status.waitFor();
   if ((await page.locator(".inline-approval").count()) !== 0) {

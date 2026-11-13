@@ -29,6 +29,7 @@
     "allow-memory-remember",
     "allow-memory-delete",
     "allow-builder-plan",
-    "allow-builder-install"
+    "allow-builder-install",
+    "allow-open-link"
   ]
 }

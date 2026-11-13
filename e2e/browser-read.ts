@@ -14,13 +14,44 @@ const story =
 
 const originalFetch = globalThis.fetch;
 globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-  if (String(input).includes("example.com")) {
+  const url = String(input);
+  if (url.includes("apple.com")) {
+    return new Response(
+      "<title>Apple</title><main><p>Live store text</p></main>",
+    );
+  }
+  if (url.includes("example.com")) {
     return new Response(story);
   }
   return originalFetch(input, init);
 }) as typeof fetch;
 
 const seen: ChatRequest[] = [];
+let releaseAnswer = () => {};
+let markAnswer = () => {};
+const answerStarted = new Promise<void>((resolve) => {
+  markAnswer = resolve;
+});
+const answerGate = new Promise<void>((resolve) => {
+  releaseAnswer = resolve;
+});
+let releaseApple = () => {};
+let markApple = () => {};
+const appleStarted = new Promise<void>((resolve) => {
+  markApple = resolve;
+});
+const appleGate = new Promise<void>((resolve) => {
+  releaseApple = resolve;
+});
+let releaseNamed = () => {};
+let markNamed = () => {};
+const namedStarted = new Promise<void>((resolve) => {
+  markNamed = resolve;
+});
+const namedGate = new Promise<void>((resolve) => {
+  releaseNamed = resolve;
+});
+let appleReads = 0;
 const adapter: ModelAdapter = {
   async listModels() {
     return [
@@ -34,7 +65,7 @@ const adapter: ModelAdapter = {
       },
     ];
   },
-  async chat(request) {
+  async chat(request, onDelta) {
     seen.push(request);
     if (request.tools && request.tools.length > 0) {
       return {
@@ -45,13 +76,35 @@ const adapter: ModelAdapter = {
         },
       };
     }
-    const tool = request.messages.find((message) => message.role === "tool");
-    if (!tool?.content.includes("illustrative examples in documents")) {
-      return { text: "The tool did not return the page text." };
+    const pageText = request.messages
+      .map((message) => message.content)
+      .join("\n");
+    if (pageText.includes("Live store text")) {
+      appleReads += 1;
+      if (appleReads === 1) {
+        markApple();
+        await appleGate;
+        return {
+          text: "The Apple website is open and displays a range of products.",
+        };
+      }
+      markNamed();
+      onDelta?.({ token: "" });
+      onDelta?.({ token: "   " });
+      onDelta?.({ token: "<think>planning the summary</think>" });
+      await namedGate;
+      return {
+        text: "Apple's homepage highlights products for the home.\nhttps://apple.com/",
+      };
     }
-    return {
-      text: "Example Domain says this domain is for use in illustrative examples in documents.",
-    };
+    if (pageText.includes("illustrative examples in documents")) {
+      markAnswer();
+      await answerGate;
+      return {
+        text: "Example Domain says this domain is for use in illustrative examples in documents.",
+      };
+    }
+    return { text: "The tool did not return the page text." };
   },
   async structured<T>(): Promise<T> {
     return {} as T;
@@ -117,17 +170,130 @@ try {
   if (cards.length !== 1 || !cards[0]?.includes("visit example.com")) {
     throw new Error(`approval cards were ${cards.join(" | ")}`);
   }
+  await page.getByText("Waiting for approval…").waitFor();
+  await page.getByRole("link", { name: "Review" }).waitFor();
+  if ((await page.getByRole("button", { name: "Send" }).count()) !== 0) {
+    throw new Error("Send was active while approval was pending");
+  }
+  if (
+    (await page
+      .locator(".approval-status", { hasText: "Read example.com" })
+      .count()) !== 0
+  ) {
+    throw new Error("the read looked finished before it was approved");
+  }
   await approve.click();
+  await page
+    .locator(".approval-status", { hasText: "Read example.com" })
+    .waitFor();
+  await answerStarted;
+  await page
+    .locator("[data-thinking]", { hasText: "Writing answer…" })
+    .waitFor();
+  const send = page.locator("#send-button");
+  const label = (await send.textContent())?.trim();
+  if (label === "Send" && !(await send.isDisabled())) {
+    throw new Error("Send was active while the answer was still generating");
+  }
+  releaseAnswer();
   await page
     .locator(".bubble.assistant", {
       hasText: "illustrative examples in documents",
     })
     .waitFor();
+  if ((await page.locator("[data-thinking]").count()) !== 0) {
+    throw new Error("Thinking stayed after the answer");
+  }
+  await page.getByRole("button", { name: "Send" }).waitFor();
+  if (await page.locator("#send-button").isDisabled()) {
+    throw new Error("Send stayed disabled after the answer");
+  }
+
+  await page.locator("#draft").fill("What is on the apple.com homepage?");
+  await page.getByRole("button", { name: "Send" }).click();
+  await page.getByRole("button", { name: "Approve" }).click();
+  const read = page.locator(".approval-status", { hasText: "Read apple.com" });
+  await read.waitFor();
+  await appleStarted;
+  const thinking = page.locator("[data-thinking]", {
+    hasText: "Writing answer…",
+  });
+  await thinking.waitFor();
+  if ((await page.getByRole("button", { name: "Send" }).count()) !== 0) {
+    throw new Error("Send was active while the answer was still generating");
+  }
+  await page.getByRole("button", { name: "Stop" }).waitFor();
+  const readBox = await read.boundingBox();
+  const thinkingBox = await thinking.boundingBox();
+  if (!readBox || !thinkingBox || readBox.y >= thinkingBox.y) {
+    throw new Error("Thinking was not under the read line");
+  }
+  releaseApple();
+  const answer = page.locator(".bubble.assistant").last();
+  await answer.getByRole("link", { name: "apple.com" }).waitFor();
+  const shown = (await answer.textContent()) ?? "";
+  if (/\bopen(?:ed)?\b/i.test(shown)) {
+    throw new Error(`the answer claimed the site was open: ${shown}`);
+  }
+  if ((await page.locator("[data-thinking]").count()) !== 0) {
+    throw new Error("Thinking stayed after the page answer");
+  }
   if ((await page.getByRole("button", { name: "Approve" }).count()) !== 0) {
     throw new Error("a second approval was still waiting");
   }
   await page.getByRole("button", { name: "Send" }).waitFor();
+
+  await page.locator("#draft").fill("Read apple.com");
+  await page.getByRole("button", { name: "Send" }).click();
+  const named = page
+    .locator(".approval-status", { hasText: "Read apple.com" })
+    .last();
+  await named.waitFor();
+  await namedStarted;
+  const writing = page.locator("[data-thinking]", {
+    hasText: "Writing answer…",
+  });
+  await writing.waitFor();
+  if ((await page.getByRole("button", { name: "Send" }).count()) !== 0) {
+    throw new Error("Send was active while the named read was still writing");
+  }
+  const namedBox = await named.boundingBox();
+  const writingBox = await writing.boundingBox();
+  if (!namedBox || !writingBox || namedBox.y >= writingBox.y) {
+    throw new Error("Writing answer was not under the read line");
+  }
+  await page.getByRole("link", { name: "Home" }).click();
+  await page.getByRole("heading", { name: "Home" }).waitFor();
+  await page.getByRole("link", { name: "Chat" }).click();
+  const returned = page.locator("[data-thinking]", {
+    hasText: "Writing answer…",
+  });
+  await returned.waitFor();
+  const returnedLine = page
+    .locator(".approval-status", { hasText: "Read apple.com" })
+    .last();
+  const returnedBox = await returned.boundingBox();
+  const returnedLineBox = await returnedLine.boundingBox();
+  if (!returnedBox || !returnedLineBox || returnedLineBox.y >= returnedBox.y) {
+    throw new Error("Writing answer was missing after returning to Chat");
+  }
+  if ((await page.getByRole("button", { name: "Send" }).count()) !== 0) {
+    throw new Error("Send was active after returning to Chat");
+  }
+  releaseNamed();
+  const summary = page.locator(".bubble.assistant").last();
+  await summary.getByRole("link", { name: "apple.com" }).waitFor();
+  const summaryText = (await summary.textContent()) ?? "";
+  if (summaryText.includes("planning the summary")) {
+    throw new Error("the thinking text was shown");
+  }
+  if (!summaryText.includes("highlights products")) {
+    throw new Error(`the summary was ${summaryText}`);
+  }
 } finally {
+  releaseAnswer();
+  releaseApple();
+  releaseNamed();
   globalThis.fetch = originalFetch;
   await browser.close();
   app.close();

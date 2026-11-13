@@ -39,6 +39,7 @@ const adapter: ModelAdapter = {
 };
 
 const waits: (() => void)[] = [];
+let navigated = 0;
 
 async function releaseHeld() {
   const started = Date.now();
@@ -58,26 +59,42 @@ const app = new DesktopApp({
   probe: async () => "running",
   memoryExtractor: { extract: () => [] },
   chromePath: "chrome",
-  browserConnect: async () => ({
-    async send(method: string, params?: Record<string, unknown>) {
-      if (method === "Page.captureScreenshot") {
-        const clip = params?.clip as { width?: number } | undefined;
-        if (
-          params?.format !== "jpeg" ||
-          params?.quality !== 40 ||
-          clip?.width !== 480
-        ) {
-          throw new Error(`thumbnail params ${JSON.stringify(params)}`);
+  browserConnect: async () => {
+    let href = "about:blank";
+    return {
+      async send(method: string, params?: Record<string, unknown>) {
+        if (method === "Page.navigate") {
+          navigated += 1;
+          href = String(params?.url ?? href);
+          return {};
         }
-        return { data: "abc" };
-      }
-      if (method === "Runtime.evaluate") {
-        return { result: { value: "complete" } };
-      }
-      return {};
-    },
-    async close() {},
-  }),
+        if (method === "Page.captureScreenshot") {
+          const clip = params?.clip as { width?: number } | undefined;
+          if (
+            params?.format !== "jpeg" ||
+            params?.quality !== 40 ||
+            clip?.width !== 480
+          ) {
+            throw new Error(`thumbnail params ${JSON.stringify(params)}`);
+          }
+          return { data: "abc" };
+        }
+        if (method === "Runtime.evaluate") {
+          const expression = String(params?.expression ?? "");
+          if (expression.includes("visibilityState")) {
+            return {
+              result: {
+                value: JSON.stringify({ href, state: "visible" }),
+              },
+            };
+          }
+          return { result: { value: "complete" } };
+        }
+        return {};
+      },
+      async close() {},
+    };
+  },
 });
 await app.start();
 const methods = app.methods();
@@ -163,13 +180,93 @@ try {
     throw new Error(`thumbnail was ${src}`);
   }
   await page.locator("#browser-site", { hasText: "example.com" }).waitFor();
-  const stop = page.getByRole("button", { name: "Stop" });
-  await stop.click();
-  await page.getByRole("button", { name: "Stopping…" }).waitFor();
-  await releaseHeld();
-  await page.locator("#browser-idle").waitFor();
+  await page
+    .locator("#browser-step", { hasText: "Opened example.com" })
+    .waitFor();
+  if ((await page.getByRole("button", { name: "Stop" }).count()) !== 0) {
+    throw new Error("Stop stayed after navigate finished");
+  }
   if (calls < 2) {
     throw new Error("the model was not asked to navigate");
+  }
+
+  const navigatedBeforeRead = navigated;
+  const originalFetch = globalThis.fetch;
+  let finishFetch: (() => void) | undefined;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input).includes("apple.com")) {
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(
+          () => reject(new Error("the background read did not finish")),
+          8_000,
+        );
+        const fail = () => {
+          clearTimeout(timer);
+          const error = new Error("Stopped.");
+          error.name = "AbortError";
+          reject(error);
+        };
+        finishFetch = () => {
+          clearTimeout(timer);
+          init?.signal?.removeEventListener("abort", fail);
+          resolve();
+        };
+        init?.signal?.addEventListener("abort", fail, { once: true });
+      });
+      return new Response(
+        "<title>Apple</title><main><p>Live store text</p></main>",
+      );
+    }
+    return originalFetch(input, init);
+  }) as typeof fetch;
+  try {
+    const question = Promise.resolve(
+      methods.chat_send({ text: "What is on the apple.com homepage?" }),
+    );
+    await page.locator("#browser-pending").waitFor();
+    await page.locator("#browser-site", { hasText: "apple.com" }).waitFor();
+    await page
+      .locator("#browser-step", { hasText: "Reading apple.com" })
+      .waitFor();
+    if ((await page.getByRole("button", { name: "Stop" }).count()) !== 1) {
+      throw new Error("Stop was missing while the page was reading");
+    }
+    if ((await page.locator(".browser-thumb").count()) !== 0) {
+      throw new Error("a background read showed an empty thumbnail");
+    }
+    await methods.chat_approve({
+      id:
+        (JSON.parse(await methods.approvals({})) as { id: string }[])[0]?.id ??
+        "",
+      action: "approve",
+    });
+    const waitFetch = Date.now();
+    while (!finishFetch) {
+      if (Date.now() - waitFetch > 3_000) {
+        throw new Error("the background fetch did not start");
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    finishFetch();
+    await page
+      .locator("#browser-step", { hasText: "Read apple.com" })
+      .waitFor();
+    if (
+      (await page.locator("#browser-step", { hasText: "Reading" }).count()) !==
+      0
+    ) {
+      throw new Error("the widget stayed on Reading after the read finished");
+    }
+    if ((await page.getByRole("button", { name: "Stop" }).count()) !== 0) {
+      throw new Error("Stop stayed after the read finished");
+    }
+    await question;
+    if (navigated !== navigatedBeforeRead) {
+      throw new Error("a background read focused Chrome");
+    }
+  } finally {
+    finishFetch?.();
+    globalThis.fetch = originalFetch;
   }
 } finally {
   waits.shift()?.();

@@ -314,6 +314,61 @@ test("a model without tool support cannot be the agent model", () => {
   expect(settings.get("agent")).toBe("llama");
 });
 
+test("a navigate result without page text does not describe the page", async () => {
+  const seen: string[] = [];
+  const adapter: ModelAdapter = {
+    async listModels() {
+      return [withTools];
+    },
+    async chat(request) {
+      const tool = request.messages.find((message) => message.role === "tool");
+      if (tool) {
+        seen.push(tool.content);
+      }
+      if (
+        request.tools?.some((item) => item.function.name === "browser.navigate")
+      ) {
+        return {
+          text: "",
+          toolCall: {
+            name: "browser.navigate",
+            arguments: JSON.stringify({ url: "https://apple.com/" }),
+          },
+        };
+      }
+      return { text: "Opened apple.com." };
+    },
+    async structured<T>(): Promise<T> {
+      return {} as T;
+    },
+  };
+  const settings = new ModelSettings();
+  settings.set("chat", "llama", [withTools]);
+  const session = new ChatSession(adapter, settings, new Approvals(() => {}));
+  await session.send("open apple.com", undefined, {
+    definitions: [
+      {
+        type: "function",
+        function: {
+          name: "browser.navigate",
+          description: "Open a URL in Chrome.",
+          parameters: {},
+        },
+      },
+    ],
+    runTool: async () =>
+      JSON.stringify({
+        ok: true,
+        allowed: true,
+        url: "https://apple.com/",
+        message: "Opened apple.com in Chrome.",
+      }),
+  });
+  expect(seen).toEqual([]);
+  expect(session.messages.at(-1)?.text).toBe("Opened apple.com in Chrome.");
+  expect(session.messages.at(-1)?.text).not.toContain("iPhone");
+});
+
 test("changing the chat model takes effect on the next message", async () => {
   const seen: string[] = [];
   const adapter: ModelAdapter = {
@@ -375,6 +430,41 @@ test("a streamed reply records the first token and an inline approval clears the
   expect(
     session.messages.some((entry) => entry.text.includes("(approved)")),
   ).toBe(true);
+});
+
+test("think-only and blank tokens stay hidden until visible text", async () => {
+  let release = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const adapter: ModelAdapter = {
+    async listModels() {
+      return [{ ...withTools, name: "qwen3:4b" }];
+    },
+    async chat(_request, onDelta) {
+      onDelta({ token: "" });
+      onDelta({ token: "   " });
+      onDelta({ token: "<think>planning the summary</think>" });
+      await gate;
+      onDelta({ token: "A short summary." });
+      return { text: "A short summary." };
+    },
+    async structured<T>(): Promise<T> {
+      return {} as T;
+    },
+  };
+  const settings = new ModelSettings();
+  settings.set("chat", "qwen3:4b", [{ ...withTools, name: "qwen3:4b" }]);
+  const session = new ChatSession(adapter, settings, new Approvals(() => {}));
+  const pending = session.send("hello");
+  await Bun.sleep(30);
+  const assistant = session.messages.find(
+    (entry) => entry.role === "assistant",
+  );
+  expect(assistant?.text ?? "").toBe("");
+  release();
+  await pending;
+  expect(assistant?.text).toBe("A short summary.");
 });
 
 test("unloading the ollama plugin leaves zero registrations", async () => {

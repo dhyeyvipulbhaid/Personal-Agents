@@ -38,6 +38,10 @@ function element(tag: string, id: string, text: string): Node {
 const documentStub = {
   title: "Sign in",
   readyState: "complete",
+  visibilityState: "visible",
+  hasFocus() {
+    return true;
+  },
   get body() {
     return main();
   },
@@ -121,14 +125,11 @@ const adapter: ModelAdapter = {
         toolCall: { name: "browser.read", arguments: "{}" },
       };
     }
-    const tool = request.messages.find((message) => message.role === "tool");
-    if (tool?.content.includes("Welcome Ada")) {
+    const heard = request.messages.map((message) => message.content).join("\n");
+    if (heard.includes("Welcome Ada")) {
       return { text: "The page says Welcome Ada." };
     }
-    if (
-      tool?.content.includes("not allowed") ||
-      tool?.content.includes('"allowed":false')
-    ) {
+    if (heard.includes("not allowed") || heard.includes('"allowed":false')) {
       return { text: "That action was not allowed." };
     }
     return { text: "Done." };
@@ -153,12 +154,24 @@ const app = new DesktopApp({
   chromePath: "chrome",
   browserConnect: async () => {
     pageState.connects += 1;
+    let href = "about:blank";
     return {
       async send(method: string, params?: Record<string, unknown>) {
+        if (method === "Page.navigate") {
+          href = String(params?.url ?? href);
+          return {};
+        }
         if (method !== "Runtime.evaluate") {
           return {};
         }
         const expression = String(params?.expression ?? "");
+        if (expression.includes("visibilityState")) {
+          return {
+            result: {
+              value: JSON.stringify({ href, state: "visible" }),
+            },
+          };
+        }
         return {
           result: {
             value: new Function(
@@ -242,7 +255,9 @@ try {
 
   await send(page, "navigate to the sign in page");
   await page.getByRole("button", { name: "Approve" }).click();
-  await page.locator(".bubble.assistant", { hasText: "Done." }).waitFor();
+  await page
+    .locator(".bubble.assistant", { hasText: "Opened sign-in.test" })
+    .waitFor();
   if (Number(pageState.connects) !== 1) {
     throw new Error(`chrome connects were ${pageState.connects}`);
   }
@@ -255,7 +270,7 @@ try {
   await typeCard.getByRole("button", { name: "Approve" }).click();
   await page
     .locator(".bubble.assistant", { hasText: "Done." })
-    .nth(1)
+    .first()
     .waitFor();
 
   await send(page, "click Sign in");
@@ -265,7 +280,7 @@ try {
   await clickCard.getByRole("button", { name: "Approve" }).click();
   await page
     .locator(".bubble.assistant", { hasText: "Done." })
-    .nth(2)
+    .nth(1)
     .waitFor();
   if (Number(pageState.clicked) !== 1 || pageState.email !== "Ada") {
     throw new Error(

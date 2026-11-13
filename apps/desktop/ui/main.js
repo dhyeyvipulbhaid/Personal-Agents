@@ -233,6 +233,14 @@ function browserCard() {
     }
     return article;
   }
+  if (browserStopping) {
+    article.append(
+      siteLine(state),
+      stepLine(state),
+      actions(disabledButton("Stopping…")),
+    );
+    return article;
+  }
   if (state.pendingApproval && browserLocked !== state.pendingApproval.id) {
     const summary = document.createElement("p");
     summary.id = "browser-pending";
@@ -253,7 +261,14 @@ function browserCard() {
         ),
       ),
     );
-    article.append(summary, row);
+    article.append(summary);
+    if (state.site || state.url) {
+      article.append(siteLine(state));
+    }
+    if (state.currentStep) {
+      article.append(stepLine(state));
+    }
+    article.append(row, actions(button("Stop", "danger", () => stopBrowser())));
     return article;
   }
   if (browserLocked && state.pendingApproval) {
@@ -262,14 +277,6 @@ function browserCard() {
     status.id = "browser-status";
     status.textContent = browserLockedText;
     article.append(status);
-    return article;
-  }
-  if (browserStopping) {
-    article.append(
-      siteLine(state),
-      stepLine(state),
-      actions(disabledButton("Stopping…")),
-    );
     return article;
   }
   if (state.thumbnail) {
@@ -281,11 +288,10 @@ function browserCard() {
       : `data:image/jpeg;base64,${state.thumbnail}`;
     article.append(img);
   }
-  article.append(
-    siteLine(state),
-    stepLine(state),
-    actions(button("Stop", "danger", () => stopBrowser())),
-  );
+  article.append(siteLine(state), stepLine(state));
+  if (state.busy) {
+    article.append(actions(button("Stop", "danger", () => stopBrowser())));
+  }
   return article;
 }
 
@@ -323,7 +329,15 @@ function progressLine(summary) {
   if (/\btype\b/i.test(text)) {
     return "Typing…";
   }
-  const open = /(?:visit|navigate to|open)\s+(\S+)/i.exec(text);
+  const visit = /\bvisit\s+(\S+)/i.exec(text);
+  if (visit?.[1]) {
+    return `Reading ${visit[1].replace(/[.,]+$/, "")}…`;
+  }
+  const reading = /\bread(?:ing)?\s+(\S+)/i.exec(text);
+  if (reading?.[1]) {
+    return `Reading ${reading[1].replace(/[.,]+$/, "")}…`;
+  }
+  const open = /(?:navigate to|open)\s+(\S+)/i.exec(text);
   if (open?.[1]) {
     return `Opening ${open[1].replace(/[.,]+$/, "")}…`;
   }

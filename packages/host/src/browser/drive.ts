@@ -39,8 +39,16 @@ type DriveOptions = {
   connect: (url: string) => Promise<CdpClient>;
   fetchPage: (url: string, signal?: AbortSignal) => Promise<string>;
   now?: () => number;
+  clock?: () => number;
+  sleep?: (ms: number) => Promise<void>;
+  timers?: DeadlineTimers;
   platform?: NodeJS.Platform;
   activate?: (command: readonly string[]) => Promise<void>;
+};
+
+export type DeadlineTimers = {
+  set(fn: () => void, ms: number): unknown;
+  clear(handle: unknown): void;
 };
 
 type Gate = "approved" | "denied" | "cancelled";
@@ -50,22 +58,32 @@ export const CDP_COMMAND_MS = 3_000;
 const READY_BUDGET_MS = 1_500;
 const MAX_CDP_CHARS = 400_000;
 
+const realTimers: DeadlineTimers = {
+  set(fn, ms) {
+    return setTimeout(fn, ms);
+  },
+  clear(handle) {
+    clearTimeout(handle as ReturnType<typeof setTimeout>);
+  },
+};
+
 export function commandDeadline<T>(
   work: Promise<T>,
   ms: number,
   label: string,
+  timers: DeadlineTimers = realTimers,
 ): Promise<T> {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
+    const timer = timers.set(() => {
       reject(new Error(`Chrome did not answer ${label}.`));
     }, ms);
     work.then(
       (value) => {
-        clearTimeout(timer);
+        timers.clear(timer);
         resolve(value);
       },
       (error: unknown) => {
-        clearTimeout(timer);
+        timers.clear(timer);
         reject(error);
       },
     );
@@ -105,15 +123,21 @@ export class BrowserDrive {
   private readonly recent: { at: string; summary: string }[] = [];
   private readonly approvedHosts = new Set<string>();
   private shots = 0;
+  private backgroundUrl = "";
+  private abortRead: (() => void) | undefined;
+  private working = false;
 
   constructor(private readonly options: DriveOptions) {}
 
   hasSession(): boolean {
-    return this.client !== null && this.currentUrl.length > 0;
+    return (
+      (this.client !== null && this.currentUrl.length > 0) ||
+      this.backgroundUrl.length > 0
+    );
   }
 
   pageUrl(): string {
-    return this.currentUrl;
+    return this.backgroundUrl || this.currentUrl;
   }
 
   site(): string {
@@ -122,6 +146,14 @@ export class BrowserDrive {
 
   currentStep(): string {
     return this.step;
+  }
+
+  busy(): boolean {
+    return this.working;
+  }
+
+  wantsThumb(): boolean {
+    return this.backgroundUrl.length === 0 && this.client !== null;
   }
 
   lastActionAt(): number {
@@ -133,7 +165,7 @@ export class BrowserDrive {
   }
 
   async captureThumb(): Promise<string> {
-    if (!this.client) {
+    if (!this.client || this.backgroundUrl.length > 0) {
       return "";
     }
     try {
@@ -150,6 +182,10 @@ export class BrowserDrive {
   }
 
   async halt(): Promise<void> {
+    this.abortRead?.();
+    this.abortRead = undefined;
+    this.working = false;
+    this.backgroundUrl = "";
     this.currentUrl = "";
     this.step = "";
     await this.close();
@@ -187,21 +223,33 @@ export class BrowserDrive {
     if (this.halted(signal)) {
       return this.stopped(url);
     }
+    this.working = true;
     try {
-      const ready = await this.openWindow(url, signal);
+      const opened = await this.openWindow(url, signal);
       if (this.halted(signal)) {
         return this.stopped(url);
+      }
+      if (!opened) {
+        await this.dropClient();
+        this.currentUrl = "";
+        this.noteStep("");
+        return {
+          ok: false,
+          allowed: true,
+          url,
+          message: `Could not confirm that ${host} opened in Chrome.`,
+        };
       }
       this.currentUrl = url;
       this.approvedHosts.add(host);
       this.options.session.note(summary);
       this.log(`Navigated to ${host}`);
-      const loading = ready ? "" : " The page is still loading.";
+      this.noteStep(`done navigate ${host}`);
       return {
         ok: true,
         allowed: true,
         url,
-        message: `Opened ${host} in Chrome.${loading}`,
+        message: `Opened ${host} in Chrome.`,
       };
     } catch (error) {
       if (this.halted(signal) || isAbort(error)) {
@@ -228,6 +276,8 @@ export class BrowserDrive {
         url,
         message: `Chrome did not start, so ${host} was not opened in Safari or any other browser. ${detail}`,
       };
+    } finally {
+      this.working = false;
     }
   }
 
@@ -342,6 +392,10 @@ export class BrowserDrive {
 
   async read(raw?: string, signal?: AbortSignal): Promise<DriveResult> {
     const url = raw ? canonical(raw) : this.currentUrl;
+    const background = !this.readsOpenPage(url);
+    if (background && url) {
+      this.armBackground(url);
+    }
     if (
       this.client &&
       this.currentUrl &&
@@ -349,26 +403,38 @@ export class BrowserDrive {
       samePage(url, this.currentUrl) &&
       this.approvedHosts.has(new URL(this.currentUrl).host)
     ) {
-      if (this.halted(signal)) {
-        return this.stopped(this.currentUrl);
-      }
-      const page = (await this.evaluate(readExpression())) as {
-        title?: string;
-        headings?: string[];
-        text?: string;
-      };
+      this.working = true;
       const host = new URL(this.currentUrl).host;
-      this.options.session.note(`read ${host}`);
-      this.log(`Read ${host}`);
-      return {
-        ok: true,
-        allowed: true,
-        opened: true,
-        url: this.currentUrl,
-        title: page.title ?? "",
-        headings: page.headings ?? [],
-        text: page.text ?? "",
-      };
+      this.noteStep(`read ${host}`);
+      let finished = false;
+      try {
+        if (this.halted(signal)) {
+          return this.stopped(this.currentUrl);
+        }
+        const page = (await this.evaluate(readExpression())) as {
+          title?: string;
+          headings?: string[];
+          text?: string;
+        };
+        this.options.session.note(`read ${host}`);
+        this.log(`Read ${host}`);
+        this.noteStep(`done read ${host}`);
+        finished = true;
+        return {
+          ok: true,
+          allowed: true,
+          opened: true,
+          url: this.currentUrl,
+          title: page.title ?? "",
+          headings: page.headings ?? [],
+          text: page.text ?? "",
+        };
+      } finally {
+        this.working = false;
+        if (!finished) {
+          this.noteStep(`done navigate ${host}`);
+        }
+      }
     }
     if (!url) {
       return {
@@ -379,8 +445,11 @@ export class BrowserDrive {
       };
     }
     const loaded = await this.options.session.read(url, (target) =>
-      this.options.fetchPage(target, signal),
+      this.options.fetchPage(target, this.liveSignal(signal)),
     );
+    if (loaded.cancelled || !loaded.opened) {
+      this.clearBackground();
+    }
     if (loaded.cancelled) {
       return {
         ok: false,
@@ -407,6 +476,7 @@ export class BrowserDrive {
       };
     }
     this.log(`Read ${new URL(url).host}`);
+    this.finishBackground(url);
     return { ok: true, allowed: true, ...loaded };
   }
 
@@ -484,8 +554,14 @@ export class BrowserDrive {
     client: CdpClient,
     method: string,
     params?: Record<string, unknown>,
+    ms = CDP_COMMAND_MS,
   ): Promise<unknown> {
-    return commandDeadline(client.send(method, params), CDP_COMMAND_MS, method);
+    return commandDeadline(
+      client.send(method, params),
+      ms,
+      method,
+      this.options.timers,
+    );
   }
 
   private async ensure(url: string): Promise<CdpClient> {
@@ -506,35 +582,175 @@ export class BrowserDrive {
     url: string,
     signal?: AbortSignal,
   ): Promise<boolean> {
-    const reused = this.client !== null;
-    try {
-      return await this.issueNavigation(url, signal);
-    } catch (error) {
-      if (this.halted(signal) || isAbort(error) || !isStaleConnection(error)) {
-        throw error;
-      }
-      await this.dropClient();
-      if (!reused) {
-        throw error;
-      }
+    const first = await this.attemptOpen(url, signal);
+    if (first === "stopped") {
+      throw aborted();
     }
-    return await this.issueNavigation(url, signal);
+    if (first === "open") {
+      return true;
+    }
+    await this.dropClient();
+    if (this.halted(signal)) {
+      throw aborted();
+    }
+    await this.revealInChrome(url);
+    const second = await this.attemptOpen(url, signal);
+    if (second === "stopped") {
+      throw aborted();
+    }
+    return second === "open";
   }
 
-  private async issueNavigation(
+  private async attemptOpen(
     url: string,
     signal?: AbortSignal,
-  ): Promise<boolean> {
-    const client = await this.ensure(url);
+  ): Promise<"open" | "miss" | "stopped"> {
     if (this.halted(signal)) {
-      throw aborted();
+      return "stopped";
     }
-    await this.command(client, "Page.navigate", { url });
-    if (this.halted(signal)) {
-      throw aborted();
+    try {
+      const client = await this.ensure(url);
+      if (this.halted(signal)) {
+        return "stopped";
+      }
+      await this.command(client, "Page.navigate", { url });
+      if (this.halted(signal)) {
+        return "stopped";
+      }
+      await this.focusChrome(client);
+      const href = await this.visibleHref(client, url, signal);
+      if (this.halted(signal)) {
+        return "stopped";
+      }
+      return href ? "open" : "miss";
+    } catch (error) {
+      if (this.halted(signal) || isAbort(error)) {
+        return "stopped";
+      }
+      if (isRecoverable(error)) {
+        return "miss";
+      }
+      throw error;
     }
-    await this.focusChrome(client);
-    return await this.waitReady(client, signal);
+  }
+
+  private async visibleHref(
+    client: CdpClient,
+    url: string,
+    signal?: AbortSignal,
+  ): Promise<string | null> {
+    const deadline = this.clock() + READY_BUDGET_MS;
+    while (this.clock() < deadline) {
+      if (this.halted(signal)) {
+        return null;
+      }
+      const href = await this.shownHref(client, url);
+      if (href) {
+        return href;
+      }
+      const remaining = deadline - this.clock();
+      if (remaining <= 0) {
+        break;
+      }
+      await this.sleep(Math.min(50, remaining));
+    }
+    return null;
+  }
+
+  private async shownHref(
+    client: CdpClient,
+    url: string,
+  ): Promise<string | null> {
+    const info = await this.attachedTarget(client);
+    if (info && (info.type !== "page" || info.attached === false)) {
+      return null;
+    }
+    const proof = await this.pageProof(client);
+    if (
+      !proof?.href ||
+      proof.state !== "visible" ||
+      !hostMatches(proof.href, url)
+    ) {
+      return null;
+    }
+    if (info?.url && info.url.length > 0 && !hostMatches(info.url, url)) {
+      return null;
+    }
+    return proof.href;
+  }
+
+  private async attachedTarget(client: CdpClient): Promise<{
+    type?: string;
+    url?: string;
+    attached?: boolean;
+  } | null> {
+    try {
+      const info = (await this.command(
+        client,
+        "Target.getTargetInfo",
+        undefined,
+        500,
+      )) as {
+        targetInfo?: { type?: string; url?: string; attached?: boolean };
+      };
+      return info.targetInfo ?? null;
+    } catch (error) {
+      if (isStaleConnection(error)) {
+        throw error;
+      }
+      return null;
+    }
+  }
+
+  private async pageProof(client: CdpClient): Promise<{
+    href: string;
+    state: string;
+  } | null> {
+    try {
+      const payload = (await this.command(
+        client,
+        "Runtime.evaluate",
+        {
+          expression:
+            "JSON.stringify({href:location.href,state:document.visibilityState})",
+          returnByValue: true,
+        },
+        READY_BUDGET_MS,
+      )) as { result?: { value?: unknown } };
+      const raw = payload.result?.value;
+      if (typeof raw !== "string") {
+        return null;
+      }
+      const parsed = JSON.parse(raw) as { href?: unknown; state?: unknown };
+      if (typeof parsed.href !== "string") {
+        return null;
+      }
+      return {
+        href: parsed.href,
+        state: typeof parsed.state === "string" ? parsed.state : "",
+      };
+    } catch (error) {
+      if (isAbort(error) || isStaleConnection(error)) {
+        throw error;
+      }
+      return null;
+    }
+  }
+
+  private async revealInChrome(url: string): Promise<void> {
+    const command = chromeRevealCommand(
+      this.options.platform ?? process.platform,
+      url,
+    );
+    if (!command) {
+      return;
+    }
+    try {
+      const run = this.options.activate ?? runChromeFront;
+      await run(command);
+    } catch {
+      // The relaunch still has to prove which tab is visible.
+    }
   }
 
   private async focusChrome(client: CdpClient): Promise<void> {
@@ -579,32 +795,6 @@ export class BrowserDrive {
       );
     }
     return payload.result?.value;
-  }
-
-  private async waitReady(
-    client: CdpClient,
-    signal?: AbortSignal,
-  ): Promise<boolean> {
-    const deadlineAt = Date.now() + READY_BUDGET_MS;
-    while (Date.now() < deadlineAt) {
-      if (this.halted(signal)) {
-        return false;
-      }
-      try {
-        const state = await this.evaluate("document.readyState");
-        if (state === "complete" || state === "interactive") {
-          return true;
-        }
-      } catch (error) {
-        if (isCdpTimeout(error)) {
-          return false;
-        }
-        throw error;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    void client;
-    return false;
   }
 
   private canDrive(): boolean {
@@ -661,10 +851,57 @@ export class BrowserDrive {
   }
 
   private hostLabel(): string {
-    if (!this.currentUrl) {
+    const url = this.pageUrl();
+    if (!url) {
       return "";
     }
-    return new URL(this.currentUrl).host;
+    return new URL(url).host;
+  }
+
+  private readsOpenPage(url: string | null): boolean {
+    return (
+      this.client !== null &&
+      this.currentUrl.length > 0 &&
+      url !== null &&
+      samePage(url, this.currentUrl) &&
+      this.approvedHosts.has(new URL(this.currentUrl).host)
+    );
+  }
+
+  private armBackground(url: string): void {
+    this.backgroundUrl = url;
+    this.working = true;
+    this.noteStep(`read ${new URL(url).host}`);
+    this.lastAction = this.now();
+  }
+
+  private finishBackground(url: string): void {
+    this.backgroundUrl = url;
+    this.working = false;
+    this.noteStep(`done read ${new URL(url).host}`);
+    this.lastAction = this.now();
+  }
+
+  private clearBackground(): void {
+    this.backgroundUrl = "";
+    this.working = false;
+    if (this.currentUrl.length === 0) {
+      this.step = "";
+      return;
+    }
+    this.noteStep(`done navigate ${new URL(this.currentUrl).host}`);
+  }
+
+  private liveSignal(parent?: AbortSignal): AbortSignal {
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    this.abortRead = abort;
+    if (parent?.aborted) {
+      abort();
+    } else {
+      parent?.addEventListener("abort", abort, { once: true });
+    }
+    return controller.signal;
   }
 
   private noteStep(summary: string): void {
@@ -688,6 +925,19 @@ export class BrowserDrive {
   private now(): number {
     return this.options.now ? this.options.now() : Date.now();
   }
+
+  private clock(): number {
+    return this.options.clock ? this.options.clock() : Date.now();
+  }
+
+  private sleep(ms: number): Promise<void> {
+    if (this.options.sleep) {
+      return this.options.sleep(ms);
+    }
+    return new Promise((resolve) => {
+      setTimeout(resolve, ms);
+    });
+  }
 }
 
 /** macOS needs an explicit activate; other platforms already raise the window. */
@@ -698,6 +948,47 @@ export function chromeFrontCommand(
     return null;
   }
   return ["osascript", "-e", 'tell application "Google Chrome" to activate'];
+}
+
+function chromeRevealCommand(
+  platform: NodeJS.Platform,
+  url: string,
+): readonly string[] | null {
+  if (platform !== "darwin") {
+    return null;
+  }
+  return ["open", "-a", "Google Chrome", url];
+}
+
+function isRecoverable(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  return (
+    isStaleConnection(error) ||
+    isCdpTimeout(error) ||
+    error.message.includes("debugging") ||
+    error.message.includes("did not open")
+  );
+}
+
+function hostMatches(actualHref: string, requestedUrl: string): boolean {
+  let actual = "";
+  let requested = "";
+  try {
+    actual = new URL(actualHref).host;
+    requested = new URL(requestedUrl).host;
+  } catch {
+    return false;
+  }
+  if (actual.length === 0 || requested.length === 0) {
+    return false;
+  }
+  return (
+    actual === requested ||
+    actual === `www.${requested}` ||
+    requested === `www.${actual}`
+  );
 }
 
 function runChromeFront(command: readonly string[]): Promise<void> {

@@ -7,6 +7,7 @@ import type {
   ToolCall,
   ToolDefinition,
 } from "./adapter.ts";
+import { stripThink } from "./ollama.ts";
 
 export type TranscriptEntry = {
   role: "user" | "assistant" | "approval" | "memory";
@@ -39,6 +40,7 @@ export class ChatSession {
       model?: string;
       definitions: ToolDefinition[];
       runTool: (call: ToolCall, signal?: AbortSignal) => Promise<string>;
+      forced?: ToolCall;
     },
   ): Promise<ChatResult> {
     this.messages.push({ role: "user", text });
@@ -49,6 +51,7 @@ export class ChatSession {
     this.messages.push(assistant);
     const started = this.clock();
     let sawToken = false;
+    let rawReply = "";
     const controller = new AbortController();
     this.abort = controller;
     const messages: ChatTurn[] = [
@@ -56,22 +59,30 @@ export class ChatSession {
       ...history,
     ];
     const onDelta = (delta: { token: string }) => {
+      rawReply += delta.token;
+      const visible = stripThink(rawReply).trim();
+      if (visible.length === 0) {
+        assistant.text = "";
+        return;
+      }
       if (!sawToken) {
         this.firstTokenMs = this.clock() - started;
         sawToken = true;
       }
-      assistant.text += delta.token;
+      assistant.text = visible;
     };
     try {
-      let result = await this.adapter.chat(
-        {
-          model,
-          messages,
-          tools: tools?.definitions,
-        },
-        onDelta,
-        controller.signal,
-      );
+      let result = tools?.forced
+        ? { text: "", toolCall: tools.forced }
+        : await this.adapter.chat(
+            {
+              model,
+              messages,
+              tools: tools?.definitions,
+            },
+            onDelta,
+            controller.signal,
+          );
       const call = result.toolCall;
       const known =
         call !== undefined &&
@@ -79,6 +90,7 @@ export class ChatSession {
           true;
       let handled = false;
       let toolOutput = "";
+      let forModel = "";
       if (call && tools && known) {
         handled = true;
         assistant.text = "";
@@ -97,6 +109,44 @@ export class ChatSession {
           assistant.text = refused;
           return { text: refused };
         }
+        if (call.name === "browser.navigate") {
+          assistant.text = navigateReply(toolOutput);
+          return { text: assistant.text };
+        }
+        if (call.name === "browser.read" || call.name === "browser.open") {
+          const read = readForAnswer(toolOutput);
+          if (!read.failed) {
+            assistant.text = "";
+            result = await this.adapter.chat(
+              {
+                model,
+                messages: [
+                  {
+                    role: "system",
+                    content: `You read this page in the background. It is not open. Summarize it in your own words in at most four sentences or five bullets of the main sections. Do not paste, quote, or repeat the page text. Include this link: ${read.url}. Do not say the site is open or that you opened it. Do not add facts that are not in the text.`,
+                  },
+                  { role: "user", content: text },
+                  {
+                    role: "user",
+                    content: `Page notes from ${read.url}:\n${notesForModel(read.pageText)}`,
+                  },
+                ],
+              },
+              onDelta,
+              controller.signal,
+            );
+            assistant.text = finishReadAnswer(
+              result.text,
+              read.url,
+              read.pageText,
+            );
+            return { text: assistant.text };
+          }
+          if (tools?.forced?.name === "browser.read") {
+            assistant.text = read.fallback;
+            return { text: read.fallback };
+          }
+        }
         messages.push({
           role: "assistant",
           content: result.text,
@@ -109,9 +159,10 @@ export class ChatSession {
             },
           ],
         });
+        forModel = modelToolContent(toolOutput);
         messages.push({
           role: "tool",
-          content: toolOutput,
+          content: forModel,
           toolName: call.name,
         });
         assistant.text = "";
@@ -133,7 +184,7 @@ export class ChatSession {
       if (result.text.trim().length > 0) {
         assistant.text = result.text;
       } else if (handled) {
-        assistant.text = replyFromTool(toolOutput);
+        assistant.text = replyFromTool(forModel);
       }
       if (result.toolCall && !handled) {
         this.raiseApproval(result.toolCall.name, result.toolCall.arguments);
@@ -257,6 +308,133 @@ function fixedDenial(parsed: ToolPayload): string {
       : `Not allowed: I didn't type into "${field}".`;
   }
   return `Not allowed: I didn't open ${host.length > 0 ? host : "that page"}.`;
+}
+
+function notesForModel(pageText: string): string {
+  const notes = pageText.replace(/\s+/g, " ").trim();
+  if (notes.length <= 1_800) {
+    return notes;
+  }
+  return `${notes.slice(0, 1_800).trimEnd()}...`;
+}
+
+function finishReadAnswer(reply: string, url: string, pageText = ""): string {
+  let text = stripThink(reply)
+    .trim()
+    .replace(/\bopened\b/gi, "read")
+    .replace(/\bis open\b/gi, "was read");
+  const host = hostOf(url) || "the page";
+  if (text.length === 0 || echoesPage(text, pageText)) {
+    text = `I read ${host} but couldn't summarize it.`;
+  }
+  if (url.length > 0 && !text.includes(url)) {
+    text = `${text}\n${url}`;
+  }
+  return text.trim();
+}
+
+function echoesPage(reply: string, pageText: string): boolean {
+  const norm = (value: string) =>
+    value
+      .toLowerCase()
+      .replace(/https?:\/\/\S+/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+  const answer = norm(reply);
+  const page = norm(pageText);
+  if (
+    page.length >= 16 &&
+    answer.includes(page) &&
+    answer.length >= page.length + 30
+  ) {
+    return true;
+  }
+  if (answer.length < 120 || page.length < 80) {
+    return false;
+  }
+  if (page.includes(answer.slice(0, 100))) {
+    return true;
+  }
+  return answer.includes(page.slice(0, 80));
+}
+
+function readForAnswer(output: string): {
+  failed: boolean;
+  fallback: string;
+  url: string;
+  pageText: string;
+} {
+  let url = "";
+  try {
+    const parsed = JSON.parse(output) as {
+      url?: string;
+      text?: string;
+      title?: string;
+      opened?: boolean;
+    };
+    url = typeof parsed.url === "string" ? parsed.url : "";
+    const pageText = typeof parsed.text === "string" ? parsed.text.trim() : "";
+    const title = typeof parsed.title === "string" ? parsed.title.trim() : "";
+    if (parsed.opened === false || pageText.length === 0) {
+      return {
+        failed: true,
+        fallback: `I couldn't read the page. ${url || "the page"}`.trim(),
+        url,
+        pageText: "",
+      };
+    }
+    return {
+      failed: false,
+      fallback: "",
+      url,
+      pageText: title.length > 0 ? `${title}\n${pageText}` : pageText,
+    };
+  } catch {
+    return {
+      failed: true,
+      fallback: "I couldn't read the page.",
+      url,
+      pageText: "",
+    };
+  }
+}
+
+function navigateReply(output: string): string {
+  try {
+    const parsed = JSON.parse(output) as { message?: string };
+    if (typeof parsed.message === "string" && parsed.message.length > 0) {
+      return parsed.message;
+    }
+  } catch {
+    // The tool result is plain text.
+  }
+  return "Could not confirm that the page opened in Chrome.";
+}
+
+function modelToolContent(output: string): string {
+  try {
+    const parsed = JSON.parse(output) as ToolPayload & {
+      ok?: boolean;
+      message?: string;
+    };
+    const pageText = typeof parsed.text === "string" ? parsed.text.trim() : "";
+    if (pageText.length > 0) {
+      return output;
+    }
+    if (
+      parsed.ok === true &&
+      typeof parsed.message === "string" &&
+      parsed.message.startsWith("Opened ")
+    ) {
+      const host = hostOf(parsed.url);
+      return host.length > 0
+        ? `Opened ${host}. No page text was returned.`
+        : "Opened the page. No page text was returned.";
+    }
+  } catch {
+    // The tool result is plain text.
+  }
+  return output;
 }
 
 function hostOf(url: string | undefined): string {

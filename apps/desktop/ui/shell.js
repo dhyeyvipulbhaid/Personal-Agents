@@ -245,3 +245,4 @@ themeMedia.addEventListener("change", () => {
 });
 showOllama();
 showBadge();
+window.setInterval(showBadge, 1000);

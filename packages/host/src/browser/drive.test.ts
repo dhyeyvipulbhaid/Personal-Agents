@@ -13,6 +13,8 @@ import {
   chromeExecutable,
   chromeFrontCommand,
   chromeLaunchArgs,
+  connectChrome,
+  type DeadlineTimers,
   openSocket,
   waitForPage,
 } from "./drive.ts";
@@ -23,9 +25,14 @@ type Send = { method: string; params?: Record<string, unknown> };
 class SignInDocument {
   title = "Sign in";
   readyState = "complete";
+  visibilityState = "visible";
   email = "";
   status = "";
   clicked = 0;
+
+  hasFocus(): boolean {
+    return true;
+  }
 
   get body(): ElementLike {
     return main(this);
@@ -134,6 +141,7 @@ function element(
 
 class StandIn implements CdpClient {
   readonly sends: Send[] = [];
+  private href = "about:blank";
 
   constructor(private readonly page: SignInDocument) {}
 
@@ -142,12 +150,16 @@ class StandIn implements CdpClient {
     params?: Record<string, unknown>,
   ): Promise<unknown> {
     this.sends.push({ method, params });
+    if (method === "Page.navigate") {
+      this.href = String(params?.url ?? this.href);
+    }
     if (method === "Runtime.evaluate") {
       const expression = String(params?.expression ?? "");
       const value = new Function(
         "document",
+        "location",
         `"use strict"; return (${expression});`,
-      )(this.page);
+      )(this.page, { href: this.href });
       return { result: { value } };
     }
     if (method === "Page.captureScreenshot") {
@@ -159,12 +171,47 @@ class StandIn implements CdpClient {
   async close(): Promise<void> {}
 }
 
+function manualTime(): {
+  clock: () => number;
+  sleep: (ms: number) => Promise<void>;
+  timers: DeadlineTimers;
+} {
+  let time = 0;
+  return {
+    clock: () => time,
+    sleep: async (ms) => {
+      time += ms;
+    },
+    timers: {
+      set() {
+        return 0;
+      },
+      clear() {},
+    },
+  };
+}
+
+function pageValue(
+  page: SignInDocument,
+  expression: string,
+  href: string,
+): unknown {
+  return new Function(
+    "document",
+    "location",
+    `"use strict"; return (${expression});`,
+  )(page, { href });
+}
+
 function harness(options?: {
   executable?: string | null;
   debuggingBlocked?: boolean;
   connect?: (page: SignInDocument) => Promise<CdpClient>;
   platform?: NodeJS.Platform;
   activate?: (command: readonly string[]) => Promise<void>;
+  clock?: () => number;
+  sleep?: (ms: number) => Promise<void>;
+  timers?: DeadlineTimers;
 }): {
   drive: BrowserDrive;
   approvals: Approvals;
@@ -193,6 +240,9 @@ function harness(options?: {
       "<title>Fetched</title><main><h1>Fetched</h1><p>from the background</p></main>",
     platform: options?.platform ?? "linux",
     activate: options?.activate ?? (async () => {}),
+    clock: options?.clock,
+    sleep: options?.sleep,
+    timers: options?.timers,
   });
   return { drive, approvals, session, activity, page, dir };
 }
@@ -423,24 +473,25 @@ test("chat shows one click card and a denial does not click", async () => {
     probe: async () => "running",
     memoryExtractor: createFakeExtractor(() => []),
     chromePath: "chrome",
-    browserConnect: async () => ({
-      async send(method: string, params?: Record<string, unknown>) {
-        sends.push(method);
-        if (method === "Runtime.evaluate") {
-          const expression = String(params?.expression ?? "");
-          return {
-            result: {
-              value: new Function(
-                "document",
-                `"use strict"; return (${expression});`,
-              )(page),
-            },
-          };
-        }
-        return {};
-      },
-      async close() {},
-    }),
+    browserConnect: async () => {
+      let href = "about:blank";
+      return {
+        async send(method: string, params?: Record<string, unknown>) {
+          sends.push(method);
+          if (method === "Page.navigate") {
+            href = String(params?.url ?? href);
+          }
+          if (method === "Runtime.evaluate") {
+            const expression = String(params?.expression ?? "");
+            return {
+              result: { value: pageValue(page, expression, href) },
+            };
+          }
+          return {};
+        },
+        async close() {},
+      };
+    },
   });
   await app.start();
   const methods = app.methods();
@@ -490,14 +541,15 @@ test("chat shows one click card and a denial does not click", async () => {
 
 test("stop during a pending click does not click", async () => {
   const page = new SignInDocument();
-  let calls = 0;
   const adapter: ModelAdapter = {
     async listModels() {
       return [];
     },
-    async chat() {
-      calls += 1;
-      if (calls === 1) {
+    async chat(request) {
+      const text =
+        request.messages.filter((message) => message.role === "user").at(-1)
+          ?.content ?? "";
+      if (text.includes("sign in page")) {
         return {
           text: "",
           toolCall: {
@@ -506,10 +558,7 @@ test("stop during a pending click does not click", async () => {
           },
         };
       }
-      if (calls === 2) {
-        return { text: "Opened the sign-in page." };
-      }
-      if (calls === 3) {
+      if (text.includes("click")) {
         return {
           text: "",
           toolCall: {
@@ -530,23 +579,24 @@ test("stop during a pending click does not click", async () => {
     probe: async () => "running",
     memoryExtractor: createFakeExtractor(() => []),
     chromePath: "chrome",
-    browserConnect: async () => ({
-      async send(method: string, params?: Record<string, unknown>) {
-        if (method === "Runtime.evaluate") {
-          const expression = String(params?.expression ?? "");
-          return {
-            result: {
-              value: new Function(
-                "document",
-                `"use strict"; return (${expression});`,
-              )(page),
-            },
-          };
-        }
-        return {};
-      },
-      async close() {},
-    }),
+    browserConnect: async () => {
+      let href = "about:blank";
+      return {
+        async send(method: string, params?: Record<string, unknown>) {
+          if (method === "Page.navigate") {
+            href = String(params?.url ?? href);
+          }
+          if (method === "Runtime.evaluate") {
+            const expression = String(params?.expression ?? "");
+            return {
+              result: { value: pageValue(page, expression, href) },
+            };
+          }
+          return {};
+        },
+        async close() {},
+      };
+    },
   });
   await app.start();
   const methods = app.methods();
@@ -645,21 +695,26 @@ test("a hung navigate command finishes while chat stays reachable", async () => 
     expect(state).toBe("ok");
     const done = await Promise.race([
       Promise.resolve(send).then((raw) => raw),
-      Bun.sleep(8_000).then(() => "hung"),
+      Bun.sleep(12_000).then(() => "hung"),
     ]);
     expect(done).not.toBe("hung");
     const view = JSON.parse(String(done)) as {
       messages: { role: string; text: string }[];
     };
     expect(
-      view.messages.some((message) => message.text.includes("still loading")),
+      view.messages.some((message) =>
+        message.text.includes("Could not confirm"),
+      ),
     ).toBe(true);
+    expect(
+      view.messages.some((message) => message.text.includes("iPhone")),
+    ).toBe(false);
   } finally {
     app.close();
   }
-}, 15_000);
+}, 20_000);
 
-test("a hung ready check still reports the page as opened", async () => {
+test("a hung location check does not claim the page opened", async () => {
   const { drive, approvals } = harness({
     connect: async () => ({
       send(method: string) {
@@ -681,10 +736,12 @@ test("a hung ready check still reports the page as opened", async () => {
   if (result === "hung") {
     throw new Error("navigate hung");
   }
-  expect(result.ok).toBe(true);
+  expect(result.ok).toBe(false);
   expect(result.allowed).toBe(true);
-  expect(result.message).toContain("www.apple.com");
-  expect(result.message).toContain("still loading");
+  expect(result.message).toBe(
+    "Could not confirm that www.apple.com opened in Chrome.",
+  );
+  expect(drive.hasSession()).toBe(false);
 }, 12_000);
 
 test("a silent debugging port does not stall past its deadline", async () => {
@@ -916,14 +973,16 @@ test("navigate that never reaches a window does not claim the page is loading", 
   approvals.approve(approvals.pending()[0]?.id ?? "");
   const result = await pending;
   expect(result.ok).toBe(false);
-  expect(result.message).toContain("did not open a window");
+  expect(result.message).toBe(
+    "Could not confirm that www.bbc.com opened in Chrome.",
+  );
   expect(result.message).not.toContain("still loading");
   expect(result.message).not.toContain("Opened");
   expect(drive.hasSession()).toBe(false);
   expect(drive.pageUrl()).toBe("");
 }, 12_000);
 
-test("still loading is reported only after the window is asked to load", async () => {
+test("a navigate is focused before the host is checked", async () => {
   const sends: string[] = [];
   const commands: string[][] = [];
   const { drive, approvals } = harness({
@@ -948,9 +1007,9 @@ test("still loading is reported only after the window is asked to load", async (
   const pending = drive.navigate("www.example.com");
   approvals.approve(approvals.pending()[0]?.id ?? "");
   const result = await pending;
-  expect(result.ok).toBe(true);
+  expect(result.ok).toBe(false);
   expect(result.message).toBe(
-    "Opened www.example.com in Chrome. The page is still loading.",
+    "Could not confirm that www.example.com opened in Chrome.",
   );
   const navigateAt = sends.indexOf("Page.navigate");
   const frontAt = sends.indexOf("Page.bringToFront");
@@ -958,9 +1017,185 @@ test("still loading is reported only after the window is asked to load", async (
   expect(frontAt).toBeGreaterThan(navigateAt);
   expect(commands).toEqual([
     ["osascript", "-e", 'tell application "Google Chrome" to activate'],
+    ["open", "-a", "Google Chrome", "https://www.example.com/"],
+    ["osascript", "-e", 'tell application "Google Chrome" to activate'],
   ]);
-  expect(drive.hasSession()).toBe(true);
+  expect(drive.hasSession()).toBe(false);
 }, 12_000);
+
+test("the first navigate after launch does not treat the startup tab as opened", async () => {
+  let connects = 0;
+  const commands: string[][] = [];
+  const { drive, approvals } = harness({
+    platform: "darwin",
+    ...manualTime(),
+    activate: async (command) => {
+      commands.push([...command]);
+    },
+    connect: async () => {
+      connects += 1;
+      const generation = connects;
+      let href = "about:blank";
+      return {
+        async send(method: string, params?: Record<string, unknown>) {
+          if (method === "Page.navigate" && generation > 1) {
+            href = "https://www.apple.com/";
+          }
+          if (method === "Runtime.evaluate") {
+            const expression = String(params?.expression ?? "");
+            if (expression.includes("visibilityState")) {
+              return {
+                result: {
+                  value: JSON.stringify({
+                    href,
+                    state: generation > 1 ? "visible" : "hidden",
+                  }),
+                },
+              };
+            }
+            return { result: { value: "complete" } };
+          }
+          if (method === "Target.getTargetInfo") {
+            return {
+              targetInfo: {
+                type: "page",
+                url: href,
+                attached: generation > 1,
+              },
+            };
+          }
+          return {};
+        },
+        async close() {},
+      };
+    },
+  });
+  const pending = drive.navigate("https://apple.com/");
+  approvals.approve(approvals.pending()[0]?.id ?? "");
+  const result = await pending;
+  expect(result.ok).toBe(true);
+  expect(result.message).toBe("Opened apple.com in Chrome.");
+  expect(result.text).toBeUndefined();
+  expect(connects).toBe(2);
+  expect(drive.pageUrl()).toBe("https://apple.com/");
+  expect(commands).toContainEqual([
+    "open",
+    "-a",
+    "Google Chrome",
+    "https://apple.com/",
+  ]);
+});
+
+test("an unverified navigate does not claim the page opened", async () => {
+  let connects = 0;
+  const commands: string[][] = [];
+  const { drive, approvals } = harness({
+    platform: "darwin",
+    ...manualTime(),
+    activate: async (command) => {
+      commands.push([...command]);
+    },
+    connect: async () => {
+      connects += 1;
+      return {
+        async send(method: string, params?: Record<string, unknown>) {
+          if (method === "Runtime.evaluate") {
+            const expression = String(params?.expression ?? "");
+            if (expression.includes("visibilityState")) {
+              return {
+                result: {
+                  value: JSON.stringify({
+                    href: "about:blank",
+                    state: "visible",
+                  }),
+                },
+              };
+            }
+            return { result: { value: "complete" } };
+          }
+          if (method === "Target.getTargetInfo") {
+            return {
+              targetInfo: {
+                type: "page",
+                url: "about:blank",
+                attached: true,
+              },
+            };
+          }
+          return {};
+        },
+        async close() {},
+      };
+    },
+  });
+  const pending = drive.navigate("apple.com");
+  approvals.approve(approvals.pending()[0]?.id ?? "");
+  const result = await pending;
+  expect(result.ok).toBe(false);
+  expect(result.message).toBe(
+    "Could not confirm that apple.com opened in Chrome.",
+  );
+  expect(result.message).not.toContain("Opened");
+  expect(result.message).not.toContain("still loading");
+  expect(connects).toBe(2);
+  expect(drive.hasSession()).toBe(false);
+  expect(drive.pageUrl()).toBe("");
+  expect(commands.filter((command) => command[0] === "open")).toEqual([
+    ["open", "-a", "Google Chrome", "https://apple.com/"],
+  ]);
+});
+
+test("a hidden tab on the right host is not reported as opened", async () => {
+  let connects = 0;
+  const { drive, approvals } = harness({
+    platform: "darwin",
+    ...manualTime(),
+    activate: async () => {},
+    connect: async () => {
+      connects += 1;
+      const generation = connects;
+      return {
+        async send(method: string, params?: Record<string, unknown>) {
+          if (method === "Page.navigate" && generation === 1) {
+            return {};
+          }
+          if (method === "Runtime.evaluate") {
+            const expression = String(params?.expression ?? "");
+            if (expression.includes("visibilityState")) {
+              const shown = generation > 1;
+              return {
+                result: {
+                  value: JSON.stringify({
+                    href: "https://www.meta.com/",
+                    state: shown ? "visible" : "hidden",
+                  }),
+                },
+              };
+            }
+          }
+          if (method === "Target.getTargetInfo") {
+            return {
+              targetInfo: {
+                type: "page",
+                url: "https://www.meta.com/",
+                attached: true,
+              },
+            };
+          }
+          return {};
+        },
+        async close() {},
+      };
+    },
+  });
+  const pending = drive.navigate("https://www.meta.com/");
+  approvals.approve(approvals.pending()[0]?.id ?? "");
+  const result = await pending;
+  expect(connects).toBe(2);
+  expect(result.ok).toBe(true);
+  expect(result.message).toBe("Opened www.meta.com in Chrome.");
+  expect(result.text).toBeUndefined();
+});
 
 test("linux and windows do not run the macOS Chrome activate command", async () => {
   for (const platform of ["linux", "win32"] as const) {
@@ -968,6 +1203,7 @@ test("linux and windows do not run the macOS Chrome activate command", async () 
     const sends: string[] = [];
     const { drive, approvals } = harness({
       platform,
+      ...manualTime(),
       activate: async (command) => {
         commands.push([...command]);
       },
@@ -995,6 +1231,73 @@ test("linux and windows do not run the macOS Chrome activate command", async () 
     );
   }
 });
+
+test("a background read shows on the widget without opening Chrome", async () => {
+  let connects = 0;
+  const { drive, approvals } = harness({
+    connect: async (page) => {
+      connects += 1;
+      return new StandIn(page);
+    },
+  });
+  const pending = drive.read("https://example.com/");
+  const approval = approvals.pending()[0];
+  expect(approval?.summary).toBe("visit example.com");
+  expect(drive.site()).toBe("example.com");
+  expect(drive.currentStep()).toBe("read example.com");
+  expect(drive.hasSession()).toBe(true);
+  expect(connects).toBe(0);
+  approvals.approve(approval?.id ?? "");
+  const result = await pending;
+  expect(result.opened).toBe(true);
+  expect(result.text).toContain("from the background");
+  expect(connects).toBe(0);
+  expect(drive.pageUrl()).toBe("https://example.com/");
+  expect(drive.currentStep()).toBe("done read example.com");
+  expect(drive.busy()).toBe(false);
+  await drive.halt();
+  expect(drive.hasSession()).toBe(false);
+  expect(drive.site()).toBe("");
+});
+
+test("a real Chrome tab matches the reported open state", async () => {
+  const chrome = chromeExecutable();
+  if (!chrome) {
+    return;
+  }
+  const dir = mkdtempSync(join(tmpdir(), "pa-real-chrome-"));
+  const box: { client: CdpClient | null } = { client: null };
+  const { drive, approvals } = harness({
+    executable: chrome,
+    connect: async () => {
+      box.client = await connectChrome(chrome, join(dir, "profile"));
+      return box.client;
+    },
+  });
+  const pending = drive.navigate("https://www.apple.com/");
+  approvals.approve(approvals.pending()[0]?.id ?? "");
+  const result = await pending;
+  const live = box.client
+    ? ((await box.client.send("Runtime.evaluate", {
+        expression:
+          "JSON.stringify({href:location.href,state:document.visibilityState})",
+        returnByValue: true,
+      })) as { result?: { value?: string } })
+    : null;
+  const proof = JSON.parse(live?.result?.value ?? "{}") as {
+    href?: string;
+    state?: string;
+  };
+  if (result.ok) {
+    expect(proof.href ?? "").toMatch(/apple\.com/);
+    expect(proof.state).toBe("visible");
+    expect(result.message).toBe("Opened www.apple.com in Chrome.");
+  } else {
+    expect(result.message ?? "").toContain("Could not confirm");
+    expect(result.message ?? "").not.toMatch(/^Opened /);
+  }
+  await drive.close();
+}, 45_000);
 
 test("macOS focuses Google Chrome and other platforms do not", () => {
   expect(chromeFrontCommand("darwin")).toEqual([

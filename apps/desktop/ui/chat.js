@@ -5,6 +5,25 @@ const defaults = {
 };
 
 const thread = document.getElementById("thread");
+thread?.addEventListener("click", (event) => {
+  const link = event.target.closest("a[href]");
+  if (!link) {
+    return;
+  }
+  const href = link.href;
+  if (!/^https?:\/\//i.test(href)) {
+    return;
+  }
+  event.preventDefault();
+  const open = window.pa?.invoke?.("open_link", { url: href });
+  if (open && typeof open.catch === "function") {
+    open.catch(() => {
+      window.open(href, "_blank", "noopener,noreferrer");
+    });
+    return;
+  }
+  window.open(href, "_blank", "noopener,noreferrer");
+});
 const sessions = document.getElementById("sessions");
 const modelError = document.getElementById("model-error");
 const modelNotice = document.getElementById("model-notice");
@@ -22,6 +41,8 @@ let sending = false;
 let round = 0;
 let paint = 0;
 let optimisticText = "";
+let pendingApprovals = [];
+let hostWatch = 0;
 let savedTimer = 0;
 const lockStore = "pa-approval-locks";
 const lockedCards = loadLocks();
@@ -58,6 +79,7 @@ function normalize(parsed) {
       sessions: [{ id: "this", title: "This chat" }],
       activeId: "this",
       streaming: false,
+      pending: [],
       models: null,
       notice: "",
     };
@@ -67,6 +89,7 @@ function normalize(parsed) {
     sessions: Array.isArray(parsed.sessions) ? parsed.sessions : [],
     activeId: typeof parsed.activeId === "string" ? parsed.activeId : "",
     streaming: Boolean(parsed.streaming),
+    pending: Array.isArray(parsed.pending) ? parsed.pending : [],
     models: parsed.models ?? null,
     notice: typeof parsed.notice === "string" ? parsed.notice : "",
   };
@@ -131,6 +154,15 @@ function renderMessages(messages) {
         thread.append(line);
         continue;
       }
+      const waiting = document.createElement("p");
+      waiting.className = "muted";
+      waiting.dataset.waiting = "1";
+      waiting.append("Waiting for approval… ");
+      const review = document.createElement("a");
+      review.href = "approvals.html";
+      review.textContent = "Review";
+      waiting.append(review);
+      card.append(waiting);
       if (lockedCards.has(message.approvalId)) {
         card.dataset.locked = "1";
         const status = document.createElement("p");
@@ -156,42 +188,86 @@ function renderMessages(messages) {
       continue;
     }
     const role = message.role === "user" ? "user" : "assistant";
-    if (
-      role === "assistant" &&
-      String(message.text ?? "").trim().length === 0
-    ) {
+    const visible =
+      role === "assistant" ? visibleAnswer(message.text) : (message.text ?? "");
+    if (role === "assistant" && visible.length === 0) {
       continue;
     }
     const bubble = document.createElement("div");
     bubble.className = `bubble ${role}`;
     if (role === "assistant") {
-      bubble.innerHTML = markdownToHtml(message.text ?? "");
+      bubble.innerHTML = markdownToHtml(visible);
     } else {
-      bubble.textContent = message.text ?? "";
+      bubble.textContent = visible;
     }
     thread.append(bubble);
+  }
+  for (const item of pendingApprovals) {
+    if (thread.querySelector(`[data-approval-id="${item.id}"]`)) {
+      continue;
+    }
+    const line = document.createElement("p");
+    line.className = "muted";
+    line.dataset.waiting = "1";
+    line.dataset.approvalId = item.id;
+    line.append("Waiting for approval… ");
+    const review = document.createElement("a");
+    review.href = "approvals.html";
+    review.textContent = "Review";
+    line.append(review);
+    thread.append(line);
   }
   appendThinking(messages);
   thread.scrollTop = thread.scrollHeight;
 }
 
+function currentTurn(messages) {
+  let start = 0;
+  for (let index = 0; index < messages.length; index += 1) {
+    if (messages[index].role === "user") {
+      start = index;
+    }
+  }
+  return messages.slice(start);
+}
+
+function visibleAnswer(text) {
+  return String(text ?? "")
+    .replace(/<think\b[^>]*>[\s\S]*?<\/think>/gi, "")
+    .replace(/<think\b[^>]*>[\s\S]*$/i, "")
+    .replace(/<\/think>/gi, "")
+    .trim();
+}
+
 function appendThinking(messages) {
-  if (!sending || optimisticText.length === 0) {
+  if (!sending) {
     return;
   }
-  const answered = messages.some(
-    (message) =>
-      (message.role === "assistant" &&
-        String(message.text ?? "").trim().length > 0) ||
-      (message.role === "approval" && !settled(message.text)),
+  const turn = currentTurn(messages);
+  const pendingCard = turn.some(
+    (message) => message.role === "approval" && !settled(message.text),
   );
-  if (answered) {
+  if (pendingCard) {
+    return;
+  }
+  let toolAt = -1;
+  for (let index = 0; index < turn.length; index += 1) {
+    const message = turn[index];
+    if (message.role === "approval" && settled(message.text)) {
+      toolAt = index;
+    }
+  }
+  const hasAnswer = turn.some(
+    (message) =>
+      message.role === "assistant" && visibleAnswer(message.text).length > 0,
+  );
+  if (hasAnswer || (optimisticText.length === 0 && toolAt < 0)) {
     return;
   }
   const echoed = messages.some(
     (message) => message.role === "user" && message.text === optimisticText,
   );
-  if (!echoed) {
+  if (!echoed && optimisticText.length > 0) {
     const user = document.createElement("div");
     user.className = "bubble user";
     user.textContent = optimisticText;
@@ -200,7 +276,7 @@ function appendThinking(messages) {
   const thought = document.createElement("div");
   thought.className = "bubble assistant";
   thought.dataset.thinking = "1";
-  thought.textContent = "Thinking…";
+  thought.textContent = toolAt >= 0 ? "Writing answer…" : "Thinking…";
   thread.append(thought);
 }
 
@@ -264,7 +340,10 @@ function settledLine(text) {
   const raw = String(text ?? "");
   const denied = raw.includes("(denied)");
   const cancelled = raw.includes("(cancelled)");
-  const body = raw.replace(/\s*\((approved|denied|cancelled)\)\s*/g, "").trim();
+  const body = raw
+    .replace(/\s*\((?:approved|denied|cancelled|read)\)\s*/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
   const click = /click "([^"]+)"/i.exec(body);
   if (click) {
     if (denied) {
@@ -286,7 +365,21 @@ function settledLine(text) {
     }
     return field.length > 0 ? `Typed into "${field}"` : "Typed into a field";
   }
-  const open = /(?:visit|navigate to|open)\s+(\S+)/i.exec(body);
+  const visit = /\bvisit\s+(\S+)/i.exec(body);
+  if (visit?.[1]) {
+    const host = visit[1].replace(/[.,]+$/, "");
+    if (denied) {
+      return `Denied: ${host}`;
+    }
+    if (cancelled) {
+      return "Cancelled";
+    }
+    if (raw.includes("(read)")) {
+      return `Read ${host}`;
+    }
+    return `Reading ${host}…`;
+  }
+  const open = /(?:navigate to|open)\s+(\S+)/i.exec(body);
   if (open?.[1]) {
     const host = open[1].replace(/[.,]+$/, "");
     if (denied) {
@@ -294,6 +387,9 @@ function settledLine(text) {
     }
     if (cancelled) {
       return "Cancelled";
+    }
+    if (/could not confirm|did not open|was not opened/i.test(raw)) {
+      return `Did not open ${host}`;
     }
     return `Opened ${host}`;
   }
@@ -311,7 +407,8 @@ function settled(text) {
   return (
     value.includes("(approved)") ||
     value.includes("(denied)") ||
-    value.includes("(cancelled)")
+    value.includes("(cancelled)") ||
+    value.includes("(read)")
   );
 }
 
@@ -324,7 +421,11 @@ function progressLine(summary) {
   if (/\btype\b/i.test(text)) {
     return "Typing…";
   }
-  const open = /(?:visit|navigate to|open)\s+(\S+)/i.exec(text);
+  const visit = /\bvisit\s+(\S+)/i.exec(text);
+  if (visit?.[1]) {
+    return `Reading ${visit[1].replace(/[.,]+$/, "")}…`;
+  }
+  const open = /(?:navigate to|open)\s+(\S+)/i.exec(text);
   if (open?.[1]) {
     return `Opening ${open[1].replace(/[.,]+$/, "")}…`;
   }
@@ -425,12 +526,22 @@ async function refresh() {
     return state;
   }
   activeId = state.activeId || activeId;
+  pendingApprovals = state.pending ?? [];
+  if (state.streaming || pendingApprovals.length > 0) {
+    sending = true;
+  }
   renderSessions(state);
   renderMessages(state.messages);
-  if (sending && state.streaming) {
+  if (sending) {
     setSending(true);
-  } else if (!sending) {
+  } else {
     setSending(false);
+  }
+  window.clearTimeout(hostWatch);
+  if (state.streaming || pendingApprovals.length > 0) {
+    hostWatch = window.setTimeout(() => {
+      refresh().catch(() => {});
+    }, 200);
   }
   if (state.notice) {
     modelNotice.textContent = state.notice;
@@ -556,12 +667,30 @@ async function submitChat(text) {
   } finally {
     clearInterval(poll);
     if (mine === round) {
-      sending = false;
-      optimisticText = "";
-      setSending(false);
+      await settleTurn(mine);
     }
-    await refresh();
   }
+}
+
+async function settleTurn(mine) {
+  const state = await refresh().catch(() => null);
+  if (mine !== round || !state) {
+    return;
+  }
+  if (state.streaming || state.pending.length > 0) {
+    sending = true;
+    setSending(true);
+    window.setTimeout(() => {
+      if (mine === round) {
+        settleTurn(mine).catch(() => {});
+      }
+    }, 200);
+    return;
+  }
+  sending = false;
+  optimisticText = "";
+  setSending(false);
+  await refresh();
 }
 
 document.getElementById("composer").addEventListener("submit", (event) => {
