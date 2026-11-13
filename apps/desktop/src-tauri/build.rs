@@ -35,6 +35,7 @@ fn main() {
             "memory_settings",
             "memory_save_settings",
             "memory_enable_encryption",
+            "memory_restore_backup",
             "builder_plan",
             "builder_install",
             "open_link",

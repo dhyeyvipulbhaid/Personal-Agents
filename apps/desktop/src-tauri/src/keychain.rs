@@ -42,6 +42,20 @@ pub fn load_or_create(store: &impl SecretStore) -> Result<String, String> {
     Ok(created)
 }
 
+/// Write a key only when a later read of the same service and account returns it.
+/// A failure here must not be followed by encrypting the bank.
+pub fn store_and_verify(store: &impl SecretStore) -> Result<String, String> {
+    let key = load_or_create(store)?;
+    let read_back = store.get()?.map(|value| value.trim().to_string());
+    match read_back {
+        Some(value) if value == key => Ok(key),
+        _ => Err(
+            "The memory key could not be read back from the macOS Keychain or Windows Credential Manager. Memory was not encrypted."
+                .into(),
+        ),
+    }
+}
+
 pub fn generate_key() -> Result<String, String> {
     let mut bytes = [0u8; 32];
     getrandom::getrandom(&mut bytes).map_err(|_| "Could not generate a memory key.".to_string())?;
@@ -115,5 +129,38 @@ mod tests {
         let line = redact(&format!("unlock failed: {key}"), &key);
         assert!(!line.contains(&key));
         assert!(line.contains("[redacted]"));
+    }
+
+    #[test]
+    fn the_keychain_names_are_stable() {
+        assert_eq!(SERVICE, "com.personalagents.desktop");
+        assert_eq!(ACCOUNT, "memory-bank");
+    }
+
+    #[test]
+    fn write_then_verify_reads_the_same_key() {
+        let store = MemoryStore(Mutex::new(None));
+        let key = store_and_verify(&store).expect("verified");
+        assert_eq!(store.get().expect("read").as_deref(), Some(key.as_str()));
+        assert_eq!(store_and_verify(&store).expect("same"), key);
+    }
+
+    struct ForgetfulStore;
+
+    impl SecretStore for ForgetfulStore {
+        fn get(&self) -> Result<Option<String>, String> {
+            Ok(None)
+        }
+
+        fn set(&self, _secret: &str) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_store_that_cannot_be_read_back_does_not_yield_a_key() {
+        let err = store_and_verify(&ForgetfulStore).expect_err("verify");
+        assert!(err.contains("Memory was not encrypted"));
+        assert!(!err.contains("AAAA"));
     }
 }

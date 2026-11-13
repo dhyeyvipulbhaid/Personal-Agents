@@ -571,7 +571,7 @@ pub async fn memory_save_settings(
 pub async fn memory_enable_encryption(
     host: tauri::State<'_, HostHandle>,
 ) -> Result<String, String> {
-    let key = crate::keychain::load_or_create(&crate::keychain::OsSecretStore)?;
+    let key = crate::keychain::store_and_verify(&crate::keychain::OsSecretStore)?;
     let inner = host.inner().clone();
     let secret = key;
     tauri::async_runtime::spawn_blocking(move || {
@@ -585,6 +585,14 @@ pub async fn memory_enable_encryption(
     })
     .await
     .map_err(|err| err.to_string())?
+}
+
+#[tauri::command]
+pub async fn memory_restore_backup(host: tauri::State<'_, HostHandle>) -> Result<String, String> {
+    let host = host.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || host.call_when_ready("memory_restore"))
+        .await
+        .map_err(|err| err.to_string())?
 }
 
 #[tauri::command]

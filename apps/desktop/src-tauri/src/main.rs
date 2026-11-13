@@ -54,6 +54,7 @@ fn main() {
             host::memory_settings,
             host::memory_save_settings,
             host::memory_enable_encryption,
+            host::memory_restore_backup,
             host::builder_plan,
             host::builder_install,
             open_link
@@ -76,9 +77,7 @@ fn open_link(url: String) -> Result<(), String> {
     {
         return Err("only a web link can be opened".into());
     }
-    let status = open_command(&url)
-        .status()
-        .map_err(|err| err.to_string())?;
+    let status = open_command(&url).status().map_err(|err| err.to_string())?;
     if status.success() {
         Ok(())
     } else {

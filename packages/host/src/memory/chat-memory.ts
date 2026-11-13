@@ -1,4 +1,10 @@
-import { copyFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  readFileSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import {
   createOllamaExtractor,
@@ -128,6 +134,7 @@ export type ChatMemoryClient = {
   status?(): MemoryStatus;
   encrypt?(key: string): EncryptView;
   unlock?(key: string): void;
+  restorePlaintext?(): void;
 };
 
 export type PageQuery = {
@@ -557,6 +564,33 @@ export class ChatMemory implements ChatMemoryClient {
     } catch (error) {
       this.restoreBackup(backup);
       throw this.publicError(error, secret);
+    }
+  }
+
+  /** Replace the encrypted file with the plaintext `.bak` from before encryption. */
+  restorePlaintext(): void {
+    const backup = `${this.file}.bak`;
+    if (!existsSync(backup)) {
+      throw new Error("No plaintext backup was found next to the memory file.");
+    }
+    this.closeBank();
+    copyFileSync(backup, this.file);
+    for (const suffix of ["-wal", "-shm"]) {
+      try {
+        unlinkSync(`${this.file}${suffix}`);
+      } catch {
+        // The sidecar files are absent when the bank was not using WAL.
+      }
+    }
+    this.prefs.encryptionEnabled = false;
+    this.keyInUse = "";
+    this.openError = "";
+    this.writePrefs();
+    try {
+      this.open(undefined);
+    } catch (error) {
+      this.openError = this.publicError(error).message;
+      throw new Error(this.openError);
     }
   }
 

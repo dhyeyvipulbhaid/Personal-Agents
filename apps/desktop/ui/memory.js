@@ -30,11 +30,28 @@ function messageOf(error) {
   return "the agent host did not answer";
 }
 
+function isKeyError(detail) {
+  return /encrypt|keychain|key does not match|not a valid 32-byte/i.test(
+    detail,
+  );
+}
+
+function noteKeyProblem(detail) {
+  encryptionStatus.textContent = detail;
+  const restore = document.getElementById("restore-backup");
+  if (restore) {
+    restore.hidden = !/missing from the macOS Keychain/i.test(detail);
+  }
+  status.textContent = "";
+  if (reflectStatus.textContent.startsWith("Reflecting")) {
+    reflectStatus.textContent = "";
+  }
+}
+
 function showMemoryError(error) {
   const detail = messageOf(error);
-  if (/encrypt|keychain|key does not match|not a valid 32-byte/i.test(detail)) {
-    status.textContent = detail;
-    encryptionStatus.textContent = detail;
+  if (isKeyError(detail)) {
+    noteKeyProblem(detail);
     return;
   }
   status.textContent = window.pa.explain(error, "Memory");
@@ -198,6 +215,10 @@ async function showObservations() {
     if (/unexpected command|Method not found/i.test(detail)) {
       return;
     }
+    if (isKeyError(detail)) {
+      noteKeyProblem(detail);
+      return;
+    }
     reflectStatus.textContent = detail;
   }
 }
@@ -217,12 +238,18 @@ async function showSettings() {
     const encrypt = document.getElementById("encrypt-memory");
     encrypt.checked = settings.encryptionEnabled === true;
     encrypt.disabled = settings.encryptionEnabled === true;
-    if (settings.error) {
+    const restore = document.getElementById("restore-backup");
+    if (settings.error && isKeyError(settings.error)) {
+      noteKeyProblem(settings.error);
+    } else if (settings.error) {
       encryptionStatus.textContent = settings.error;
-      status.textContent = settings.error;
+      restore.hidden = true;
     } else if (settings.encryptionEnabled) {
       encryptionStatus.textContent =
         "Memory is encrypted. The key is in the macOS Keychain or Windows Credential Manager.";
+      restore.hidden = true;
+    } else {
+      restore.hidden = true;
     }
   } catch (error) {
     const detail = messageOf(error);
@@ -409,6 +436,10 @@ async function showGraph() {
     if (/unexpected command|Method not found/i.test(detail)) {
       return;
     }
+    if (isKeyError(detail)) {
+      noteKeyProblem(detail);
+      return;
+    }
     status.textContent = detail;
   }
 }
@@ -506,10 +537,34 @@ document
       .catch((error) => {
         box.checked = false;
         const detail = messageOf(error);
+        if (isKeyError(detail)) {
+          noteKeyProblem(detail);
+          return;
+        }
         encryptionStatus.textContent = detail;
-        status.textContent = detail;
       });
   });
+
+document.getElementById("restore-backup").addEventListener("click", () => {
+  encryptionStatus.textContent = "Restoring the plaintext backup…";
+  window.pa
+    .invoke("memory_restore_backup")
+    .then(async () => {
+      document.getElementById("restore-backup").hidden = true;
+      const box = document.getElementById("encrypt-memory");
+      box.checked = false;
+      box.disabled = false;
+      encryptionStatus.textContent =
+        "Restored the plaintext backup. Memory is not encrypted.";
+      status.textContent = "";
+      await showFacts();
+      await showObservations();
+      return showGraph();
+    })
+    .catch((error) => {
+      noteKeyProblem(messageOf(error));
+    });
+});
 
 document.getElementById("reflect-form").addEventListener("submit", (event) => {
   event.preventDefault();
