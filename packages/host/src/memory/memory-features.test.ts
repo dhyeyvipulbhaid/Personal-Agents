@@ -16,6 +16,7 @@ import {
   memorySettingsFile,
   WRONG_KEY_MESSAGE,
 } from "./chat-memory.ts";
+import { transientFactReason } from "./transient.ts";
 
 test("hybrid recall finds a paraphrase from embeddings and a time cue", async () => {
   const dir = mkdtempSync(join(tmpdir(), "pa-hybrid-"));
@@ -428,6 +429,90 @@ test("graph snapshot exposes recency and the four edge types", async () => {
     expect(graph.texts[observation?.id ?? ""]).toBe(
       "Maya prepares for morning meetings.",
     );
+  } finally {
+    memory.close();
+  }
+});
+
+test("retain skips page-state and assistant meta, and sweep lists them", async () => {
+  expect(transientFactReason("My dentist is Dr. Patel")).toBeNull();
+  expect(transientFactReason("The user likes green tea")).toBeNull();
+  expect(
+    transientFactReason(
+      "The Apple website is open and displays the latest iPhone.",
+    ),
+  ).toBe("page-state");
+  expect(
+    transientFactReason(
+      "The homepage of meta.com features the text Welcome to Meta.",
+    ),
+  ).toBe("page-state");
+  expect(
+    transientFactReason(
+      "The assistant did not fetch information from the actual website.",
+    ),
+  ).toBe("assistant-meta");
+  expect(
+    transientFactReason(
+      "The assistant responded positively to the user's preference.",
+    ),
+  ).toBe("assistant-meta");
+
+  const dir = mkdtempSync(join(tmpdir(), "pa-transient-"));
+  const memory = new ChatMemory({
+    dataDir: dir,
+    extractor: createFakeExtractor(() => [
+      {
+        text: "The Apple website is open and displays the latest iPhone.",
+        kind: "world",
+        occurrenceTime: null,
+        entities: [],
+      },
+      {
+        text: "The user likes green tea.",
+        kind: "world",
+        occurrenceTime: null,
+        entities: [],
+      },
+      {
+        text: "The assistant responded positively to the user's preference.",
+        kind: "experience",
+        occurrenceTime: null,
+        entities: [],
+      },
+    ]),
+  });
+  try {
+    await memory.retainExchange("I like green tea", "noted");
+    await memory.settle();
+    expect(memory.list().map((fact) => fact.text)).toEqual([
+      "The user likes green tea.",
+    ]);
+    await memory.remember("My dentist is Dr. Patel.");
+    await memory.remember(
+      "The homepage of meta.com features the text Welcome to Meta.",
+    );
+    await memory.remember(
+      "The assistant did not fetch information from the actual website.",
+    );
+    const preview = memory.sweep(true);
+    expect(preview.dryRun).toBe(true);
+    expect(preview.deleted).toBe(0);
+    expect(preview.candidates.map((item) => item.text).sort()).toEqual([
+      "The assistant did not fetch information from the actual website.",
+      "The homepage of meta.com features the text Welcome to Meta.",
+    ]);
+    expect(memory.list().map((fact) => fact.text)).toContain(
+      "My dentist is Dr. Patel.",
+    );
+    const applied = memory.sweep(false);
+    expect(applied.deleted).toBe(2);
+    expect(
+      memory
+        .list()
+        .map((fact) => fact.text)
+        .sort(),
+    ).toEqual(["My dentist is Dr. Patel.", "The user likes green tea."]);
   } finally {
     memory.close();
   }

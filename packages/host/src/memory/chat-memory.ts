@@ -14,6 +14,7 @@ import {
   type Reflector,
 } from "memory-bank";
 import type { MemoryFact } from "./memory.ts";
+import { transientFactReason } from "./transient.ts";
 
 /** Facts placed in one chat prompt. estimateTokens is ceil(characters / 4). */
 export const CHAT_RECALL_TOKEN_BUDGET = 400;
@@ -196,8 +197,9 @@ export class ChatMemory implements ChatMemoryClient {
     this.file = memoryBankFile(options.dataDir);
     this.prefsPath = memorySettingsFile(options.dataDir);
     this.prefs = readPrefs(this.prefsPath);
-    this.extractor =
-      options.extractor ?? ollamaExtractor(options.model, options.host);
+    this.extractor = filteringExtractor(
+      options.extractor ?? ollamaExtractor(options.model, options.host),
+    );
     this.embedder = wrapEmbedder(options.embed, () => this.embeddingModel());
     const host = options.host?.trim() || DEFAULT_MEMORY_HOST;
     this.reflector =
@@ -352,15 +354,35 @@ export class ChatMemory implements ChatMemoryClient {
   }
 
   sweep(dryRun: boolean): SweepView {
-    const result = this.requireBank().sweepJunk({ dryRun });
-    return {
-      dryRun: result.dryRun,
-      candidates: result.candidates.map((item) => ({
+    const bank = this.requireBank();
+    const library = bank.sweepJunk({ dryRun: true });
+    const seen = new Set(library.candidates.map((item) => item.id));
+    const extra = this.list().flatMap((fact) => {
+      const reason = transientFactReason(fact.text);
+      if (reason == null || seen.has(fact.id)) {
+        return [];
+      }
+      return [{ id: fact.id, text: fact.text, reason }];
+    });
+    const candidates = [
+      ...library.candidates.map((item) => ({
         id: item.id,
         text: item.text,
         reason: item.reason,
       })),
-      deleted: result.deleted,
+      ...extra,
+    ];
+    if (dryRun || candidates.length === 0) {
+      return { dryRun: true, candidates, deleted: 0 };
+    }
+    const applied = bank.sweepJunk({ dryRun: false });
+    if (extra.length > 0) {
+      bank.forgetMany(extra.map((item) => item.id));
+    }
+    return {
+      dryRun: false,
+      candidates,
+      deleted: applied.deleted + extra.length,
     };
   }
 
@@ -768,6 +790,21 @@ export class ChatMemory implements ChatMemoryClient {
     }
     console.error(`${label}: ${detail}`);
   }
+}
+
+/** memory-bank still stores page-state and assistant-meta lines. Drop them before retain. */
+function filteringExtractor(inner: Extractor): Extractor {
+  return {
+    extract(input) {
+      const extracted = inner.extract(input);
+      const keep = (facts: Awaited<ReturnType<Extractor["extract"]>>) =>
+        facts.filter((fact) => transientFactReason(fact.text) == null);
+      if (extracted instanceof Promise) {
+        return extracted.then(keep);
+      }
+      return keep(extracted);
+    },
+  };
 }
 
 function wrapEmbedder(

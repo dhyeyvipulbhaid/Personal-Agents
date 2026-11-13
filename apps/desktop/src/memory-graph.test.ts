@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { beforeEach, expect, test } from "bun:test";
 
 const source = await Bun.file(
   new URL("../ui/memory-graph.js", import.meta.url),
@@ -10,9 +10,16 @@ const runGraph = new Function(
   recencyColor(value: number): string;
   EDGE_COLORS: Record<string, string>;
   LEGEND: { id: string; label: string }[];
-  createSimulation(snapshot: unknown): Simulation;
+  createSimulation(
+    snapshot: unknown,
+    previous?: { positions?: Record<string, { x: number; y: number }> },
+  ): Simulation;
 };
 const api = runGraph();
+
+beforeEach(() => {
+  globalThis.sessionStorage?.removeItem("pa-memory-graph-positions");
+});
 
 type Node = {
   id: string;
@@ -25,6 +32,11 @@ type Node = {
 type Simulation = {
   nodes: Node[];
   step(): Node[];
+  sync(snapshot: unknown): void;
+  kinetic(): number;
+  alpha(): number;
+  isSettled(): boolean;
+  reheat(amount?: number): void;
   setPaused(value: boolean): void;
   isPaused(): boolean;
   setEdgeEnabled(type: string, on: boolean): void;
@@ -33,7 +45,12 @@ type Simulation = {
   zoomAt(factor: number, x: number, y: number): void;
   toScreen(x: number, y: number): { x: number; y: number };
   hit(x: number, y: number): { id: string } | null;
-  moveNode(id: string, x: number, y: number): void;
+  moveNode(
+    id: string,
+    x: number,
+    y: number,
+    options?: { reheat?: boolean },
+  ): void;
   view(): { zoom: number };
 };
 
@@ -105,4 +122,99 @@ test("the graph pauses, filters edges, zooms, and hits a dragged node", () => {
   simulation.zoomAt(2, 0, 0);
   expect(simulation.view().zoom).toBe(2);
   expect(simulation.toScreen(12, 8)).not.toEqual(start);
+});
+
+test("thirty nodes cool down and stay spread out", () => {
+  const nodes = Array.from({ length: 30 }, (_, index) => ({
+    id: `n${index}`,
+    label: `Fact ${index} about Maya`,
+    recency: index / 30,
+    sourceFactCount: 1,
+    derived: false,
+  }));
+  const edges = nodes.map((node, index) => ({
+    source: node.id,
+    target: nodes[(index + 1) % nodes.length]?.id,
+    type: "temporal",
+    weight: 1,
+  }));
+  const simulation = api.createSimulation({ nodes, edges });
+  const cooled = simulation.alpha();
+  simulation.hit(0, 0);
+  expect(simulation.alpha()).toBe(cooled);
+  for (let tick = 0; tick < 500; tick += 1) {
+    simulation.step();
+  }
+  expect(simulation.isSettled()).toBe(true);
+  expect(simulation.kinetic()).toBeLessThan(0.05);
+  const xs = simulation.nodes.map((node) => node.x);
+  const ys = simulation.nodes.map((node) => node.y);
+  expect(Math.max(...xs) - Math.min(...xs)).toBeGreaterThan(40);
+  expect(Math.max(...ys) - Math.min(...ys)).toBeGreaterThan(40);
+  let nearest = Number.POSITIVE_INFINITY;
+  for (let left = 0; left < simulation.nodes.length; left += 1) {
+    for (let right = left + 1; right < simulation.nodes.length; right += 1) {
+      const a = simulation.nodes[left];
+      const b = simulation.nodes[right];
+      if (!a || !b) {
+        continue;
+      }
+      nearest = Math.min(nearest, Math.hypot(a.x - b.x, a.y - b.y));
+    }
+  }
+  expect(nearest).toBeGreaterThan(18);
+});
+
+test("a refresh keeps placed nodes and only seeds new ones", () => {
+  const snapshot = {
+    nodes: [
+      {
+        id: "a",
+        label: "Maya prefers morning meetings.",
+        recency: 1,
+        sourceFactCount: 1,
+      },
+      {
+        id: "b",
+        label: "Maya writes the agenda.",
+        recency: 0.4,
+        sourceFactCount: 1,
+      },
+    ],
+    edges: [{ source: "a", target: "b", type: "entity", weight: 1 }],
+  };
+  const simulation = api.createSimulation(snapshot);
+  for (let tick = 0; tick < 25; tick += 1) {
+    simulation.step();
+  }
+  const placed = simulation.nodes.map((node) => ({
+    id: node.id,
+    x: node.x,
+    y: node.y,
+  }));
+  simulation.sync(snapshot);
+  for (const node of placed) {
+    const kept = simulation.nodes.find((item) => item.id === node.id);
+    expect(kept?.x).toBe(node.x);
+    expect(kept?.y).toBe(node.y);
+  }
+  simulation.sync({
+    nodes: [
+      ...snapshot.nodes,
+      { id: "c", label: "A new fact.", recency: 1, sourceFactCount: 1 },
+    ],
+    edges: snapshot.edges,
+  });
+  const keptA = simulation.nodes.find((node) => node.id === "a");
+  const fresh = simulation.nodes.find((node) => node.id === "c");
+  expect(keptA?.x).toBe(placed.find((node) => node.id === "a")?.x);
+  expect(fresh).toBeTruthy();
+  expect(fresh?.x).not.toBe(keptA?.x);
+  const again = api.createSimulation(snapshot, {
+    positions: { a: { x: 40, y: -15 } },
+  });
+  expect(again.nodes.find((node) => node.id === "a")).toMatchObject({
+    x: 40,
+    y: -15,
+  });
 });
