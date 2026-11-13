@@ -9,4 +9,4 @@ Run this with Ollama up and `qwen3:8b` pulled. No administrator password.
 5. Quit Ollama and send another message. Chat shows the usual Ollama message, and the window stays open.
 6. `memory-bank.sqlite` is in the app data folder: `~/Library/Application Support/com.personalagents.desktop` on macOS, `%LOCALAPPDATA%\com.personalagents.desktop` on Windows.
 
-Facts from one chat are available in the next. Recall puts at most 400 tokens of facts into the prompt. A token is `ceil(characters / 4)` of the fact text.
+Facts from one chat are available in the next. Recall puts at most 400 tokens of facts into the prompt. A token is `ceil(characters / 4)` of the fact text. Opening the app merges leftover copies of identical fact text in the same bank, so two rows of `Maya prefers morning meetings` become one.
