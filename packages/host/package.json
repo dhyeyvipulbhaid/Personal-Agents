@@ -4,6 +4,6 @@
   "version": "0.0.0",
   "type": "module",
   "dependencies": {
-    "memory-bank": "github:dhyeyvipulbhaid/memory-bank#ab1595499af6e155e713dd4418bf86bbbcd8c7a0"
+    "memory-bank": "github:dhyeyvipulbhaid/memory-bank#1f5f4df51a624aaf034dfdc715d156ef1b750fa7"
   }
 }
