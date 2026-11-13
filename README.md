@@ -14,7 +14,7 @@ When a chat reply finishes, the app asks the local model to pull facts out of th
 
 Facts live in one SQLite file, `memory-bank.sqlite`, inside the app data folder. On macOS that folder is `~/Library/Application Support/com.personalagents.desktop`. On Windows it is `%LOCALAPPDATA%\com.personalagents.desktop`. The file is not encrypted. This version has one chat agent, named `chat`. A fact saved for that agent is visible in later chats. A different agent id in the same file cannot read it.
 
-Each prompt gets at most 400 tokens of facts. A token here is `ceil(characters / 4)` of the fact text. Extraction uses the agent model (`qwen3:8b` unless you change it on Chat) at `127.0.0.1:11434`, with thinking turned off. Pull it with `ollama pull qwen3:8b`. The store is the [memory-bank](https://github.com/dhyeyvipulbhaid/memory-bank) library at commit `5639870198b8250e32bc9e53ddf6cb8ad924ef1d`.
+Each prompt gets at most 400 tokens of facts. A token here is `ceil(characters / 4)` of the fact text. Extraction uses the agent model (`qwen3:8b` unless you change it on Chat) at `127.0.0.1:11434`, with thinking turned off. Pull it with `ollama pull qwen3:8b`. The store is the [memory-bank](https://github.com/dhyeyvipulbhaid/memory-bank) library at commit `626e66db19bce5ff239ff0a0708514dfc27b4066`. Opening the app merges leftover copies of identical fact text in the same bank, so two rows of `Maya prefers morning meetings` become one.
 
 ## Repo layout
 
