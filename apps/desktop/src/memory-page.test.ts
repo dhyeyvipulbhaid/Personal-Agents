@@ -25,4 +25,19 @@ test("reflect now reloads observations, clears the status, and surfaces errors",
   expect(page.indexOf('id="graph-detail"')).toBeLessThan(
     page.indexOf('id="memory-settings"'),
   );
+  const sweep = source.slice(
+    source.indexOf('getElementById("sweep-apply")'),
+    source.indexOf('getElementById("graph-toggle")'),
+  );
+  expect(sweep).toContain("showGraph()");
+  const selected = source.slice(
+    source.indexOf('getElementById("delete-selected")'),
+    source.indexOf('getElementById("settings-form")'),
+  );
+  expect(selected).toContain("showGraph()");
+  const one = source.slice(
+    source.indexOf('invoke("memory_delete"'),
+    source.indexOf('invoke("memory_update"'),
+  );
+  expect(one).toContain("showGraph()");
 });

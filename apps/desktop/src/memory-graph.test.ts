@@ -208,6 +208,64 @@ test("twenty six facts render inside the viewport", () => {
   expect(visible).toBe(26);
 });
 
+test("sync drops deleted nodes and forgets their saved positions", () => {
+  const store = new Map<string, string>();
+  globalThis.sessionStorage = {
+    get length() {
+      return store.size;
+    },
+    clear() {
+      store.clear();
+    },
+    key(index: number) {
+      return [...store.keys()][index] ?? null;
+    },
+    getItem(key: string) {
+      return store.has(key) ? (store.get(key) ?? null) : null;
+    },
+    setItem(key: string, value: string) {
+      store.set(key, String(value));
+    },
+    removeItem(key: string) {
+      store.delete(key);
+    },
+  };
+  const simulation = api.createSimulation({
+    nodes: [
+      {
+        id: "keep",
+        label: "Maya prefers morning meetings.",
+        recency: 1,
+        sourceFactCount: 1,
+      },
+      {
+        id: "gone",
+        label: "The Apple website is open.",
+        recency: 0.2,
+        sourceFactCount: 1,
+      },
+    ],
+    edges: [],
+  });
+  simulation.sync({
+    nodes: [
+      {
+        id: "keep",
+        label: "Maya prefers morning meetings.",
+        recency: 1,
+        sourceFactCount: 1,
+      },
+    ],
+    edges: [],
+  });
+  expect(simulation.nodes.map((node) => node.id)).toEqual(["keep"]);
+  const saved = JSON.parse(
+    sessionStorage.getItem("pa-memory-graph-positions") ?? "{}",
+  );
+  expect(saved.gone).toBeUndefined();
+  expect(saved.keep).toBeTruthy();
+});
+
 test("a refresh keeps placed nodes and only seeds new ones", () => {
   const snapshot = {
     nodes: [
