@@ -31,7 +31,7 @@ function messageOf(error) {
 }
 
 function isKeyError(detail) {
-  return /encrypt|keychain|key does not match|not a valid 32-byte/i.test(
+  return /encrypt|keychain|passphrase|key does not match|not a valid 32-byte/i.test(
     detail,
   );
 }
@@ -46,9 +46,26 @@ function showGraphNote(detail) {
 function noteKeyProblem(detail) {
   encryptionStatus.textContent = detail;
   showGraphNote(detail);
+  const denied = /keychain access was denied/i.test(detail);
+  const needsPassphrase = /enter the memory passphrase/i.test(detail);
+  const missing = /missing from the macOS Keychain/i.test(detail);
   const restore = document.getElementById("restore-backup");
   if (restore) {
-    restore.hidden = !/missing from the macOS Keychain/i.test(detail);
+    restore.hidden = !(denied || missing || needsPassphrase);
+  }
+  const retry = document.getElementById("retry-keychain");
+  if (retry) {
+    retry.hidden = !denied;
+  }
+  const unlock = document.getElementById("unlock-passphrase");
+  if (unlock) {
+    unlock.hidden = !needsPassphrase;
+  }
+  const passphraseRow = document.getElementById("passphrase-row");
+  if (passphraseRow) {
+    passphraseRow.hidden = !(
+      needsPassphrase || document.getElementById("use-passphrase").checked
+    );
   }
   status.textContent = "";
   if (reflectStatus.textContent.startsWith("Reflecting")) {
@@ -245,7 +262,11 @@ async function showSettings() {
       settings.includeObservations !== false;
     const encrypt = document.getElementById("encrypt-memory");
     encrypt.checked = settings.encryptionEnabled === true;
-    encrypt.disabled = settings.encryptionEnabled === true;
+    encrypt.disabled = false;
+    const choice = document.getElementById("encryption-choice");
+    if (choice) {
+      choice.hidden = settings.encryptionPrompt !== true;
+    }
     const restore = document.getElementById("restore-backup");
     if (settings.error && isKeyError(settings.error)) {
       noteKeyProblem(settings.error);
@@ -549,20 +570,51 @@ document
       return;
     }
     if (!box.checked) {
-      if (box.disabled) {
-        setEncryptChecked(box, true);
-      }
+      encryptionBusy = true;
+      encryptionStatus.textContent = "Restoring the plaintext backup…";
+      window.pa
+        .invoke("memory_disable_encryption")
+        .then(async () => {
+          encryptionStatus.textContent =
+            "Memory is not encrypted. The plaintext backup was restored.";
+          document.getElementById("encryption-choice").hidden = true;
+          await showFacts();
+          await showObservations();
+          return showGraph();
+        })
+        .catch((error) => {
+          setEncryptChecked(box, true);
+          encryptionStatus.textContent = messageOf(error);
+        })
+        .finally(() => {
+          encryptionBusy = false;
+        });
+      return;
+    }
+    const usePassphrase = document.getElementById("use-passphrase").checked;
+    const passphrase = document.getElementById("memory-passphrase").value;
+    if (usePassphrase && passphrase.trim().length < 8) {
+      setEncryptChecked(box, false);
+      encryptionStatus.textContent =
+        "Use a passphrase of at least 8 characters.";
       return;
     }
     encryptionBusy = true;
     encryptionStatus.textContent = "Encrypting the memory file…";
+    const command = usePassphrase
+      ? "memory_enable_passphrase"
+      : "memory_enable_encryption";
+    const params = usePassphrase ? { passphrase } : undefined;
     window.pa
-      .invoke("memory_enable_encryption")
-      .then(() => {
-        box.disabled = true;
-        encryptionStatus.textContent =
-          "Memory is encrypted. The key is in the macOS Keychain or Windows Credential Manager.";
-        return showFacts();
+      .invoke(command, params)
+      .then(async () => {
+        document.getElementById("memory-passphrase").value = "";
+        document.getElementById("encryption-choice").hidden = true;
+        encryptionStatus.textContent = usePassphrase
+          ? "Memory is encrypted with a passphrase."
+          : "Memory is encrypted. The key is in the macOS Keychain or Windows Credential Manager.";
+        await showFacts();
+        return showGraph();
       })
       .catch((error) => {
         setEncryptChecked(box, false);
@@ -577,6 +629,80 @@ document
         encryptionBusy = false;
       });
   });
+
+document.getElementById("passphrase-row").hidden = true;
+
+document
+  .getElementById("use-passphrase")
+  .addEventListener("change", (event) => {
+    document.getElementById("passphrase-row").hidden =
+      !event.currentTarget.checked;
+  });
+
+document.getElementById("choice-stay-plain").addEventListener("click", () => {
+  window.pa
+    .invoke("memory_keep_plaintext")
+    .then(async () => {
+      document.getElementById("encryption-choice").hidden = true;
+      setEncryptChecked(document.getElementById("encrypt-memory"), false);
+      encryptionStatus.textContent =
+        "Memory stays unencrypted. Saved facts were not deleted.";
+      await showFacts();
+      return showGraph();
+    })
+    .catch((error) => {
+      encryptionStatus.textContent = messageOf(error);
+    });
+});
+
+document.getElementById("choice-passphrase").addEventListener("click", () => {
+  const passphrase = document.getElementById("memory-passphrase").value;
+  if (passphrase.trim().length < 8) {
+    encryptionStatus.textContent = "Use a passphrase of at least 8 characters.";
+    return;
+  }
+  window.pa
+    .invoke("memory_enable_passphrase", { passphrase })
+    .then(async () => {
+      document.getElementById("memory-passphrase").value = "";
+      document.getElementById("encryption-choice").hidden = true;
+      setEncryptChecked(document.getElementById("encrypt-memory"), true);
+      encryptionStatus.textContent = "Memory is encrypted with a passphrase.";
+      await showFacts();
+      return showGraph();
+    })
+    .catch((error) => noteKeyProblem(messageOf(error)));
+});
+
+document.getElementById("retry-keychain").addEventListener("click", () => {
+  encryptionStatus.textContent = "Asking the Keychain once…";
+  window.pa
+    .invoke("memory_retry_keychain")
+    .then(async () => {
+      document.getElementById("retry-keychain").hidden = true;
+      encryptionStatus.textContent =
+        "Memory is encrypted. The key is in the macOS Keychain or Windows Credential Manager.";
+      await showFacts();
+      await showObservations();
+      return showGraph();
+    })
+    .catch((error) => noteKeyProblem(messageOf(error)));
+});
+
+document.getElementById("unlock-passphrase").addEventListener("click", () => {
+  const passphrase = document.getElementById("memory-passphrase").value;
+  window.pa
+    .invoke("memory_unlock_passphrase", { passphrase })
+    .then(async () => {
+      document.getElementById("memory-passphrase").value = "";
+      document.getElementById("unlock-passphrase").hidden = true;
+      encryptionStatus.textContent = "Memory is unlocked.";
+      await showFacts();
+      await showObservations();
+      return showGraph();
+    })
+    .catch((error) => noteKeyProblem(messageOf(error)));
+});
 
 document.getElementById("restore-backup").addEventListener("click", () => {
   encryptionStatus.textContent = "Restoring the plaintext backup…";

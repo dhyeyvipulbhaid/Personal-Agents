@@ -2,11 +2,13 @@ import { Database } from "bun:sqlite";
 import {
   copyFileSync,
   existsSync,
+  readdirSync,
   readFileSync,
+  statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import {
   createOllamaExtractor,
   createOllamaReflector,
@@ -80,10 +82,14 @@ export type MemoryPage = {
   limit: number;
 };
 
+export type EncryptionChoice = "" | "keychain" | "passphrase" | "off";
+
 export type MemoryStatus = {
   embeddingModel: string;
   includeObservations: boolean;
   encryptionEnabled: boolean;
+  encryptionChoice: EncryptionChoice;
+  encryptionPrompt: boolean;
   error: string;
 };
 
@@ -117,6 +123,14 @@ export type ChatMemoryClient = {
   deleteMany?(ids: string[]): { removedFactIds: string[] };
   sweep?(dryRun: boolean): SweepView;
   graph?(): Promise<GraphView>;
+  adoptEncryption?(input: {
+    key?: string;
+    denied?: boolean;
+    mode?: "keychain" | "passphrase";
+    force?: boolean;
+  }): MemoryStatus;
+  keepPlaintext?(): MemoryStatus;
+  disableEncryption?(): MemoryStatus;
   observations?(): Promise<MemoryFact[]>;
   reflect?(input?: { query?: string }): Promise<MemoryFact[]>;
   reflectIfDue?(
@@ -173,6 +187,8 @@ type Prefs = {
   embeddingModel: string;
   includeObservations: boolean;
   encryptionEnabled: boolean;
+  encryptionChoice: EncryptionChoice;
+  encryptionPrompt: boolean;
 };
 
 /**
@@ -560,8 +576,102 @@ export class ChatMemory implements ChatMemoryClient {
       embeddingModel: this.prefs.embeddingModel,
       includeObservations: this.prefs.includeObservations,
       encryptionEnabled: this.prefs.encryptionEnabled,
+      encryptionChoice: this.prefs.encryptionChoice,
+      encryptionPrompt: this.prefs.encryptionPrompt,
       error: this.openError,
     };
+  }
+
+  /**
+   * One attempt to encrypt a new or plaintext bank. A denied keychain does
+   * not encrypt and does not delete stored facts.
+   */
+  adoptEncryption(input: {
+    key?: string;
+    denied?: boolean;
+    mode?: "keychain" | "passphrase";
+    force?: boolean;
+  }): MemoryStatus {
+    const mode = input.mode === "passphrase" ? "passphrase" : "keychain";
+    if (this.prefs.encryptionChoice === "off" && input.force !== true) {
+      this.ensurePlainOpen();
+      return this.status();
+    }
+    const sealed = existsSync(this.file) && bankLooksEncrypted(this.file);
+    const key = input.key?.trim() ?? "";
+    if (input.denied === true || key.length === 0) {
+      if (!sealed) {
+        this.prefs.encryptionEnabled = false;
+        this.prefs.encryptionPrompt = true;
+        this.openError = "";
+        this.writePrefs();
+        this.ensurePlainOpen();
+        return this.status();
+      }
+      this.openError =
+        input.denied === true
+          ? "Keychain access was denied"
+          : MISSING_KEY_MESSAGE;
+      this.prefs.encryptionPrompt = false;
+      this.writePrefs();
+      return this.status();
+    }
+    try {
+      if (!existsSync(this.file)) {
+        this.open(key);
+        this.keyInUse = key;
+      } else if (!sealed) {
+        this.encryptOnce(key);
+      } else {
+        this.unlock(key);
+      }
+    } catch (error) {
+      if (!sealed) {
+        this.prefs.encryptionEnabled = false;
+        this.prefs.encryptionPrompt = true;
+        this.openError = "";
+        this.writePrefs();
+        this.ensurePlainOpen();
+      }
+      throw error;
+    }
+    this.prefs.encryptionChoice = mode;
+    this.prefs.encryptionPrompt = false;
+    this.prefs.encryptionEnabled = true;
+    this.openError = "";
+    this.writePrefs();
+    return this.status();
+  }
+
+  /** Remember that memory stays plaintext. Does not delete facts. */
+  keepPlaintext(): MemoryStatus {
+    if (existsSync(this.file) && bankLooksEncrypted(this.file)) {
+      throw new Error(
+        "Memory is already encrypted. Turn encryption off in Settings to restore the plaintext backup.",
+      );
+    }
+    this.prefs.encryptionChoice = "off";
+    this.prefs.encryptionPrompt = false;
+    this.prefs.encryptionEnabled = false;
+    this.openError = "";
+    this.writePrefs();
+    this.ensurePlainOpen();
+    return this.status();
+  }
+
+  /** Turn encryption off by restoring the newest verified plaintext backup. */
+  disableEncryption(): MemoryStatus {
+    if (existsSync(this.file) && bankLooksEncrypted(this.file)) {
+      this.restorePlaintext();
+    }
+    this.prefs.encryptionChoice = "off";
+    this.prefs.encryptionPrompt = false;
+    this.prefs.encryptionEnabled = false;
+    this.openError = "";
+    this.keyInUse = "";
+    this.writePrefs();
+    this.ensurePlainOpen();
+    return this.status();
   }
 
   encrypt(key: string): EncryptView {
@@ -579,11 +689,11 @@ export class ChatMemory implements ChatMemoryClient {
   private encryptOnce(key: string): EncryptView {
     const secret = key.trim();
     this.assertKey(secret);
-    const backup = `${this.file}.bak`;
-    const hadBackup = existsSync(backup);
     this.closeBank();
-    if (!hadBackup) {
-      copyFileSync(this.file, backup);
+    const sealed = existsSync(this.file) && bankLooksEncrypted(this.file);
+    let backup = `${this.file}.bak`;
+    if (!sealed) {
+      backup = writeFreshPlaintextBackup(this.file);
     }
     try {
       const result = encryptBank(this.file, parseEncryptionKey(secret));
@@ -598,19 +708,16 @@ export class ChatMemory implements ChatMemoryClient {
         alreadyEncrypted: result.alreadyEncrypted,
       };
     } catch (error) {
-      if (!hadBackup) {
+      if (!sealed) {
         this.restoreBackup(backup);
       }
       throw this.publicError(error, secret);
     }
   }
 
-  /** Replace the encrypted file with the plaintext `.bak` from before encryption. */
+  /** Replace the encrypted file with the newest verified plaintext backup. */
   restorePlaintext(): void {
-    const backup = `${this.file}.bak`;
-    if (!existsSync(backup)) {
-      throw new Error("No plaintext backup was found next to the memory file.");
-    }
+    const backup = newestPlaintextBackup(this.file);
     this.closeBank();
     copyFileSync(backup, this.file);
     for (const suffix of ["-wal", "-shm"]) {
@@ -918,12 +1025,26 @@ export class ChatMemory implements ChatMemoryClient {
     return { id, text, source: this.agentId };
   }
 
+  private ensurePlainOpen(): void {
+    if (this.bank) {
+      return;
+    }
+    try {
+      this.open(undefined);
+      this.openError = "";
+    } catch (error) {
+      this.openError = this.publicError(error).message;
+    }
+  }
+
   private writePrefs(): void {
     const body = JSON.stringify(
       {
         embeddingModel: this.prefs.embeddingModel,
         includeObservations: this.prefs.includeObservations,
         encryptionEnabled: this.prefs.encryptionEnabled,
+        encryptionChoice: this.prefs.encryptionChoice,
+        encryptionPrompt: this.prefs.encryptionPrompt,
       },
       null,
       2,
@@ -1087,6 +1208,8 @@ function readPrefs(file: string): Prefs {
     embeddingModel: DEFAULT_EMBED_MODEL,
     includeObservations: true,
     encryptionEnabled: false,
+    encryptionChoice: "",
+    encryptionPrompt: false,
   };
   try {
     const parsed = JSON.parse(readFileSync(file, "utf8")) as Partial<Prefs>;
@@ -1094,15 +1217,154 @@ function readPrefs(file: string): Prefs {
       typeof parsed.embeddingModel === "string"
         ? parsed.embeddingModel.trim()
         : "";
+    const choice = parsed.encryptionChoice;
     return {
       embeddingModel: /^[A-Za-z0-9_.:@+-]{1,80}$/.test(model)
         ? model
         : defaults.embeddingModel,
       includeObservations: parsed.includeObservations !== false,
       encryptionEnabled: parsed.encryptionEnabled === true,
+      encryptionChoice:
+        choice === "keychain" || choice === "passphrase" || choice === "off"
+          ? choice
+          : "",
+      encryptionPrompt: parsed.encryptionPrompt === true,
     };
   } catch {
     return defaults;
+  }
+}
+
+function writeFreshPlaintextBackup(file: string): string {
+  checkpointWal(file);
+  const expected = factTexts(file);
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const stamped = `${file}.pre-encrypt-${stamp}.bak`;
+  const stable = `${file}.bak`;
+  copyFileSync(file, stamped);
+  copyFileSync(file, stable);
+  try {
+    verifyPlaintextBackup(stamped, expected);
+    verifyPlaintextBackup(stable, expected);
+  } catch (error) {
+    try {
+      unlinkSync(stamped);
+    } catch {
+      // The failed copy is removed when it exists.
+    }
+    throw error;
+  }
+  pruneStampedBackups(file, 2);
+  return stable;
+}
+
+function checkpointWal(file: string): void {
+  if (!existsSync(file)) {
+    return;
+  }
+  const db = new Database(file);
+  try {
+    db.exec("PRAGMA wal_checkpoint(TRUNCATE);");
+  } finally {
+    db.close();
+  }
+  for (const suffix of ["-wal", "-shm"]) {
+    try {
+      unlinkSync(`${file}${suffix}`);
+    } catch {
+      // WAL sidecars are absent after a truncate checkpoint.
+    }
+  }
+}
+
+function factTexts(file: string): string[] {
+  const db = new Database(file, { readonly: true });
+  try {
+    const rows = db.query("SELECT text FROM facts").all() as {
+      text: string | null;
+    }[];
+    return rows.map((row) => row.text ?? "").sort();
+  } finally {
+    db.close();
+  }
+}
+
+function verifyPlaintextBackup(file: string, expected: string[]): void {
+  const db = new Database(file, { readonly: true });
+  try {
+    const rows = db.query("SELECT text, text_enc FROM facts").all() as {
+      text: string | null;
+      text_enc: unknown;
+    }[];
+    const texts = rows.map((row) => row.text ?? "").sort();
+    const ciphertext = rows.some((row) => row.text_enc != null);
+    if (ciphertext || texts.join("\n") !== expected.join("\n")) {
+      throw new Error(
+        "The plaintext backup does not match the memory file. Memory was not encrypted.",
+      );
+    }
+  } finally {
+    db.close();
+  }
+}
+
+function pruneStampedBackups(file: string, keep: number): void {
+  const directory = dirname(file);
+  const prefix = `${basename(file)}.pre-encrypt-`;
+  const ranked = readdirSync(directory)
+    .filter((name) => name.startsWith(prefix) && name.endsWith(".bak"))
+    .map((name) => ({
+      name,
+      mtime: statSync(join(directory, name)).mtimeMs,
+    }))
+    .sort((left, right) => right.mtime - left.mtime);
+  for (const item of ranked.slice(keep)) {
+    unlinkSync(join(directory, item.name));
+  }
+}
+
+function newestPlaintextBackup(file: string): string {
+  const directory = dirname(file);
+  const base = basename(file);
+  const names = readdirSync(directory).filter(
+    (name) =>
+      name === `${base}.bak` ||
+      (name.startsWith(`${base}.pre-encrypt-`) && name.endsWith(".bak")),
+  );
+  const ranked = names
+    .map((name) => {
+      const path = join(directory, name);
+      return { path, mtime: statSync(path).mtimeMs };
+    })
+    .sort((left, right) => right.mtime - left.mtime);
+  for (const item of ranked) {
+    if (isPlaintextBackup(item.path)) {
+      return item.path;
+    }
+  }
+  throw new Error("No plaintext backup was found next to the memory file.");
+}
+
+function isPlaintextBackup(file: string): boolean {
+  try {
+    const db = new Database(file, { readonly: true });
+    try {
+      const rows = db.query("SELECT text, text_enc FROM facts").all() as {
+        text: string | null;
+        text_enc: unknown;
+      }[];
+      if (rows.some((row) => row.text_enc != null)) {
+        return false;
+      }
+      return (
+        rows.every((row) => (row.text ?? "").trim().length > 0) ||
+        rows.length === 0
+      );
+    } finally {
+      db.close();
+    }
+  } catch {
+    return false;
   }
 }
 

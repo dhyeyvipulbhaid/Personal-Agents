@@ -12,7 +12,7 @@
       <header class="page-head">
         <div>
           <h1 class="page-title">Memory</h1>
-          <p class="lede">Facts saved on this machine after a chat reply, or from this page. Derived observations cite the facts they came from. Encryption is off until you turn it on in Settings.</p>
+          <p class="lede">Facts saved on this machine after a chat reply, or from this page. Derived observations cite the facts they came from. Memory is encrypted by default. If the Keychain can't be used, set a passphrase or leave memory unencrypted. Nothing is deleted unless you confirm.</p>
         </div>
       </header>
 
@@ -46,13 +46,31 @@
             <button type="submit">Save settings</button>
           </div>
           <label class="check-line">
-            <input id="encrypt-memory" type="checkbox" />
+            <input id="encrypt-memory" type="checkbox" checked />
             Encrypt memory at rest
           </label>
-          <p class="help">The key is generated here and stored in the macOS Keychain or Windows Credential Manager. It is not written into the memory file or the log. Turning this on copies the current file to a backup, then encrypts it.</p>
+          <label class="check-line">
+            <input id="use-passphrase" type="checkbox" />
+            Use a passphrase instead of the Keychain
+          </label>
+          <label id="passphrase-row">Passphrase
+            <input id="memory-passphrase" type="password" autocomplete="new-password" />
+          </label>
+          <p class="help">The Keychain is the default. A passphrase is stored only as a salt and a check, not as the key. Turning encryption on writes a fresh plaintext backup first. Turning it off restores that backup.</p>
           <p id="encryption-status" class="help"></p>
-          <button type="button" id="restore-backup" class="ghost" hidden>Restore from backup</button>
+          <div class="button-row">
+            <button type="button" id="retry-keychain" class="ghost" hidden>Retry</button>
+            <button type="button" id="unlock-passphrase" class="ghost" hidden>Unlock</button>
+            <button type="button" id="restore-backup" class="ghost" hidden>Restore from backup</button>
+          </div>
         </form>
+        <div id="encryption-choice" hidden>
+          <p>The Keychain couldn't be used, so memory is still unencrypted. Set a passphrase to encrypt it, or keep it unencrypted for now. Nothing already saved is deleted.</p>
+          <div class="button-row">
+            <button type="button" id="choice-passphrase">Encrypt with passphrase</button>
+            <button type="button" id="choice-stay-plain" class="ghost">Keep unencrypted</button>
+          </div>
+        </div>
       </section>
 
       <form id="remember" class="button-row">
