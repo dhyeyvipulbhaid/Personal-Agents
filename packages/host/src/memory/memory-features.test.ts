@@ -1,7 +1,14 @@
 import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -197,6 +204,8 @@ test("the embedding model setting is saved and recalled facts can hide observati
       embeddingModel: "nomic-embed-text",
       includeObservations: true,
       encryptionEnabled: false,
+      encryptionChoice: "",
+      encryptionPrompt: false,
     });
     const listed = await again.observations();
     expect(listed.map((item) => item.text)).toContain(
@@ -836,10 +845,160 @@ test("encrypt writes one backup and a later call does not write another", async 
     memory.encrypt(key);
     memory.encrypt(key);
     const backups = readdirSync(dir).filter((name) => name.endsWith(".bak"));
-    expect(backups).toEqual(["memory-bank.sqlite.bak"]);
+    expect(backups.filter((name) => name === "memory-bank.sqlite.bak")).toEqual(
+      ["memory-bank.sqlite.bak"],
+    );
+    expect(
+      backups.filter((name) => name.includes(".pre-encrypt-")),
+    ).toHaveLength(1);
+    expect(
+      readFileSync(join(dir, "memory-bank.sqlite.bak")).includes(
+        "My dentist is Dr. Patel.",
+      ),
+    ).toBe(true);
     expect(memory.list().map((fact) => fact.text)).toEqual([
       "My dentist is Dr. Patel.",
     ]);
+  } finally {
+    memory.close();
+  }
+});
+
+test("a new install encrypts the bank when a key is available", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pa-default-new-"));
+  const key = randomKey();
+  const memory = new ChatMemory({
+    dataDir: dir,
+    extractor: createFakeExtractor(() => []),
+  });
+  const app = new DesktopApp({
+    dataDir: dir,
+    memory,
+    adapter: silentAdapter(),
+    probe: async () => "stopped",
+  });
+  await app.start();
+  try {
+    const status = JSON.parse(
+      await app.methods().memory_adopt_encryption({ key }),
+    ) as {
+      encryptionEnabled: boolean;
+      encryptionChoice: string;
+      encryptionPrompt: boolean;
+    };
+    expect(status.encryptionEnabled).toBe(true);
+    expect(status.encryptionChoice).toBe("keychain");
+    expect(status.encryptionPrompt).toBe(false);
+    expect(memory.list()).toEqual([]);
+    const db = new Database(join(dir, "memory-bank.sqlite"), {
+      readonly: true,
+    });
+    const marker = db
+      .query("SELECT 1 AS n FROM schema_meta WHERE key = 'encryption'")
+      .get();
+    db.close();
+    expect(marker).toBeTruthy();
+  } finally {
+    memory.close();
+  }
+});
+
+test("a plaintext bank is backed up once, encrypted, and can be turned off", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pa-default-migrate-"));
+  const key = randomKey();
+  const first = new ChatMemory({
+    dataDir: dir,
+    extractor: createFakeExtractor(() => []),
+  });
+  await first.remember("Old fact from the earlier backup.");
+  first.close();
+  const file = join(dir, "memory-bank.sqlite");
+  copyFileSync(file, `${file}.bak`);
+  const old = new Date(Date.now() - 60_000);
+  utimesSync(`${file}.bak`, old, old);
+  const memory = new ChatMemory({
+    dataDir: dir,
+    extractor: createFakeExtractor(() => []),
+  });
+  const app = new DesktopApp({
+    dataDir: dir,
+    memory,
+    adapter: silentAdapter(),
+    probe: async () => "stopped",
+  });
+  await app.start();
+  try {
+    await memory.remember("Current fact kept after junk was deleted.");
+    await app.methods().memory_adopt_encryption({ key });
+    const backup = readFileSync(`${file}.bak`);
+    expect(backup.includes("Current fact kept after junk was deleted.")).toBe(
+      true,
+    );
+    expect(backup.includes("Old fact from the earlier backup.")).toBe(true);
+    expect(
+      readdirSync(dir).filter(
+        (name) => name.includes(".pre-encrypt-") && name.endsWith(".bak"),
+      ),
+    ).toHaveLength(1);
+    expect(readFileSync(file).includes("Current fact")).toBe(false);
+    await app.methods().memory_adopt_encryption({ key });
+    expect(
+      readdirSync(dir).filter(
+        (name) => name.includes(".pre-encrypt-") && name.endsWith(".bak"),
+      ),
+    ).toHaveLength(1);
+    copyFileSync(file, join(dir, "memory-bank.sqlite.pre-encrypt-9999.bak"));
+    const disabled = JSON.parse(
+      await app.methods().memory_disable_encryption({}),
+    ) as { encryptionChoice: string; encryptionEnabled: boolean };
+    expect(disabled.encryptionChoice).toBe("off");
+    expect(disabled.encryptionEnabled).toBe(false);
+    expect(
+      memory
+        .list()
+        .map((fact) => fact.text)
+        .sort(),
+    ).toEqual([
+      "Current fact kept after junk was deleted.",
+      "Old fact from the earlier backup.",
+    ]);
+    await app.methods().memory_adopt_encryption({ key });
+    expect(readFileSync(file).includes("Current fact")).toBe(true);
+  } finally {
+    memory.close();
+  }
+});
+
+test("a denied keychain leaves the plaintext bank usable", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pa-default-denied-"));
+  const memory = new ChatMemory({
+    dataDir: dir,
+    extractor: createFakeExtractor(() => []),
+  });
+  const app = new DesktopApp({
+    dataDir: dir,
+    memory,
+    adapter: silentAdapter(),
+    probe: async () => "stopped",
+  });
+  await app.start();
+  try {
+    await memory.remember("Keep me");
+    const denied = JSON.parse(
+      await app.methods().memory_adopt_encryption({ denied: true }),
+    ) as { encryptionEnabled: boolean; encryptionPrompt: boolean };
+    expect(denied.encryptionEnabled).toBe(false);
+    expect(denied.encryptionPrompt).toBe(true);
+    expect(memory.list().map((fact) => fact.text)).toEqual(["Keep me"]);
+    await app.methods().memory_adopt_encryption({ denied: true });
+    expect(memory.list().map((fact) => fact.text)).toEqual(["Keep me"]);
+    const kept = JSON.parse(await app.methods().memory_keep_plaintext({})) as {
+      encryptionChoice: string;
+      encryptionPrompt: boolean;
+    };
+    expect(kept.encryptionChoice).toBe("off");
+    expect(kept.encryptionPrompt).toBe(false);
+    expect(memory.list().map((fact) => fact.text)).toEqual(["Keep me"]);
   } finally {
     memory.close();
   }

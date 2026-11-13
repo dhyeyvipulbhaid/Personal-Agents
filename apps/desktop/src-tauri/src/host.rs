@@ -35,6 +35,8 @@ struct HostInner {
     pid: Mutex<Option<u32>>,
     stopped: AtomicBool,
     next_id: AtomicU64,
+    keys: crate::keychain::SessionKeys,
+    adopted: AtomicBool,
 }
 
 struct Active {
@@ -74,6 +76,8 @@ impl HostHandle {
             pid: Mutex::new(None),
             stopped: AtomicBool::new(false),
             next_id: AtomicU64::new(1),
+            keys: crate::keychain::SessionKeys::new(),
+            adopted: AtomicBool::new(false),
         });
         let supervisor = Arc::clone(&inner);
         thread::Builder::new()
@@ -141,30 +145,46 @@ impl HostHandle {
         self.inner.ensure_unlocked()
     }
 
-    /// Wait until the host answers, then encrypt once. A failed encrypt is not retried.
-    fn encrypt_once(&self, key: &str) -> Result<String, String> {
+    fn obtain_key_once(&self) -> Result<String, String> {
+        self.inner.obtain_key_once()
+    }
+
+    fn clear_keys(&self) {
+        self.inner.keys.clear();
+    }
+
+    fn remember_key(&self, key: String) {
+        self.inner.keys.remember(key);
+    }
+
+    fn data_dir(&self) -> &Path {
+        &self.inner.data_dir
+    }
+
+    fn unlock_with(&self, key: &str) -> Result<(), String> {
+        self.inner.unlock_host(key)
+    }
+
+    /// Wait until the host is up, then run one call. Failures are not retried.
+    fn call_once(&self, method: &str, params: Option<serde_json::Value>) -> Result<String, String> {
         let deadline = Instant::now() + READY_TIMEOUT;
-        let mut last = "agent host is not running".to_string();
         while Instant::now() < deadline {
             match self.inner.call("version") {
                 Ok(_) => {
-                    return self
-                        .inner
-                        .call_params_timeout(
-                            "memory_encrypt",
-                            serde_json::json!({ "key": key }),
-                            CALL_TIMEOUT,
-                        )
-                        .map_err(|err| crate::keychain::redact(&err, key));
+                    return match params {
+                        Some(params) => {
+                            self.inner.call_params_timeout(method, params, CALL_TIMEOUT)
+                        }
+                        None => self.inner.call(method),
+                    };
                 }
                 Err(err) if err == "agent host is not running" => {
-                    last = err;
                     thread::sleep(Duration::from_millis(50));
                 }
-                Err(err) => return Err(crate::keychain::redact(&err, key)),
+                Err(err) => return Err(err),
             }
         }
-        Err(last)
+        Err("agent host is not running".into())
     }
 
     fn call_when_ready(&self, method: &str) -> Result<String, String> {
@@ -597,12 +617,134 @@ pub async fn memory_save_settings(
 pub async fn memory_enable_encryption(
     host: tauri::State<'_, HostHandle>,
 ) -> Result<String, String> {
-    let key = crate::keychain::store_and_verify(&crate::keychain::OsSecretStore)?;
     let inner = host.inner().clone();
-    let secret = key;
-    tauri::async_runtime::spawn_blocking(move || inner.encrypt_once(&secret))
-        .await
-        .map_err(|err| err.to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        inner.clear_keys();
+        match inner.obtain_key_once() {
+            Ok(key) => {
+                remove_passphrase(inner.data_dir());
+                inner.call_once(
+                    "memory_adopt_encryption",
+                    Some(serde_json::json!({
+                        "key": key,
+                        "denied": false,
+                        "mode": "keychain",
+                        "force": true,
+                    })),
+                )
+            }
+            Err(err) if crate::keychain::is_keychain_denial(&err) => {
+                let _ = inner.call_once(
+                    "memory_adopt_encryption",
+                    Some(serde_json::json!({ "denied": true })),
+                );
+                Err(crate::keychain::DENIED_MESSAGE.into())
+            }
+            Err(err) => Err(err),
+        }
+    })
+    .await
+    .map_err(|err| err.to_string())?
+}
+
+#[tauri::command]
+pub async fn memory_enable_passphrase(
+    host: tauri::State<'_, HostHandle>,
+    passphrase: String,
+) -> Result<String, String> {
+    let inner = host.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let (key, seal) = crate::keychain::seal_passphrase(&passphrase)?;
+        save_passphrase(inner.data_dir(), &seal)?;
+        inner.remember_key(key.clone());
+        let result = inner.call_once(
+            "memory_adopt_encryption",
+            Some(serde_json::json!({
+                "key": key,
+                "denied": false,
+                "mode": "passphrase",
+                "force": true,
+            })),
+        );
+        if result.is_err() {
+            remove_passphrase(inner.data_dir());
+            inner.clear_keys();
+        }
+        result.map(|value| crate::keychain::redact(&value, &key))
+    })
+    .await
+    .map_err(|err| err.to_string())?
+}
+
+#[tauri::command]
+pub async fn memory_unlock_passphrase(
+    host: tauri::State<'_, HostHandle>,
+    passphrase: String,
+) -> Result<String, String> {
+    let inner = host.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let seal = load_passphrase(inner.data_dir())?;
+        let key = crate::keychain::open_passphrase(&passphrase, &seal)?;
+        inner.remember_key(key.clone());
+        inner
+            .unlock_with(&key)
+            .map(|()| crate::keychain::redact("unlocked", &key))
+    })
+    .await
+    .map_err(|err| err.to_string())?
+}
+
+#[tauri::command]
+pub async fn memory_keep_plaintext(host: tauri::State<'_, HostHandle>) -> Result<String, String> {
+    let inner = host.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        inner.clear_keys();
+        inner.call_once("memory_keep_plaintext", None)
+    })
+    .await
+    .map_err(|err| err.to_string())?
+}
+
+#[tauri::command]
+pub async fn memory_disable_encryption(
+    host: tauri::State<'_, HostHandle>,
+) -> Result<String, String> {
+    let inner = host.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = inner.call_once("memory_disable_encryption", None);
+        if result.is_ok() {
+            inner.clear_keys();
+            remove_passphrase(inner.data_dir());
+        }
+        result
+    })
+    .await
+    .map_err(|err| err.to_string())?
+}
+
+#[tauri::command]
+pub async fn memory_retry_keychain(host: tauri::State<'_, HostHandle>) -> Result<String, String> {
+    let inner = host.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        inner.clear_keys();
+        match inner.obtain_key_once() {
+            Ok(key) => inner.call_once(
+                "memory_adopt_encryption",
+                Some(serde_json::json!({
+                    "key": key,
+                    "denied": false,
+                    "mode": "keychain",
+                    "force": true,
+                })),
+            ),
+            Err(err) if crate::keychain::is_keychain_denial(&err) => {
+                Err(crate::keychain::DENIED_MESSAGE.into())
+            }
+            Err(err) => Err(err),
+        }
+    })
+    .await
+    .map_err(|err| err.to_string())?
 }
 
 #[tauri::command]
@@ -709,12 +851,7 @@ impl HostInner {
         let healthy = match self.call("version") {
             Ok(version) => {
                 self.log_line(&format!("host-started pid={pid} version={version}"));
-                if encryption_enabled(&self.data_dir) {
-                    match self.ensure_unlocked() {
-                        Ok(()) => self.log_line("memory-unlock: opened"),
-                        Err(err) => self.log_line(&format!("memory-unlock: {err}")),
-                    }
-                }
+                self.adopt_encryption_once();
                 true
             }
             Err(err) => {
@@ -740,26 +877,88 @@ impl HostInner {
         false
     }
 
+    fn adopt_encryption_once(&self) {
+        if self.adopted.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let choice = encryption_choice(&self.data_dir);
+        if choice == "off" || choice == "passphrase" || passphrase_saved(&self.data_dir) {
+            return;
+        }
+        match self.obtain_key_once() {
+            Ok(key) => {
+                let params = serde_json::json!({ "key": key, "denied": false, "mode": "keychain" });
+                match self.call_params_timeout("memory_adopt_encryption", params, CALL_TIMEOUT) {
+                    Ok(_) => self.log_line("memory-encrypt: opened"),
+                    Err(err) => self.log_line(&format!(
+                        "memory-encrypt: {}",
+                        crate::keychain::redact(&err, &key)
+                    )),
+                }
+            }
+            Err(err)
+                if crate::keychain::is_keychain_denial(&err)
+                    || err.contains("macOS Keychain or Windows Credential Manager") =>
+            {
+                let _ = self.call_params_timeout(
+                    "memory_adopt_encryption",
+                    serde_json::json!({ "denied": true }),
+                    CALL_TIMEOUT,
+                );
+                self.log_line("memory-unlock: Keychain access was denied");
+            }
+            Err(err) => self.log_line(&format!("memory-unlock: {err}")),
+        }
+    }
+
+    /// Create or read the keychain key at most once for this process.
+    fn obtain_key_once(&self) -> Result<String, String> {
+        match self.keys.retry(&crate::keychain::OsSecretStore) {
+            Ok(key) => Ok(key),
+            Err(err) if err == crate::keychain::MISSING_KEY_MESSAGE => {
+                let created = crate::keychain::generate_key()?;
+                if let Err(err) = crate::keychain::OsSecretStore.set(&created) {
+                    if crate::keychain::is_keychain_denial(&err) {
+                        self.keys.deny();
+                    }
+                    return Err(err);
+                }
+                self.keys.clear();
+                let read = self.keys.read(&crate::keychain::OsSecretStore)?;
+                if read != created {
+                    self.keys.clear();
+                    return Err(
+                        "The memory key could not be read back from the macOS Keychain or Windows Credential Manager. Memory was not encrypted."
+                            .into(),
+                    );
+                }
+                Ok(created)
+            }
+            Err(err) => Err(err),
+        }
+    }
+
     fn ensure_unlocked(&self) -> Result<(), String> {
         if !encryption_enabled(&self.data_dir) {
             return Ok(());
         }
-        let key = match crate::keychain::OsSecretStore.get() {
-            Ok(Some(value)) if !value.trim().is_empty() => value,
-            Ok(_) => {
-                return Err(
-                    "Memory is encrypted, but the key is missing from the macOS Keychain or Windows Credential Manager."
-                        .into(),
-                );
-            }
-            Err(err) => return Err(err),
-        };
+        if passphrase_saved(&self.data_dir) || encryption_choice(&self.data_dir) == "passphrase" {
+            let Some(key) = self.keys.remembered() else {
+                return Err("Enter the memory passphrase to unlock.".into());
+            };
+            return self.unlock_host(&key);
+        }
+        let key = self.keys.read(&crate::keychain::OsSecretStore)?;
+        self.unlock_host(&key)
+    }
+
+    fn unlock_host(&self, key: &str) -> Result<(), String> {
         let deadline = Instant::now() + READY_TIMEOUT;
         let mut last = "agent host is not running".to_string();
         while Instant::now() < deadline {
             match self.call_params_timeout(
                 "memory_unlock",
-                serde_json::json!({ "key": key.clone() }),
+                serde_json::json!({ "key": key }),
                 CALL_TIMEOUT,
             ) {
                 Ok(_) => return Ok(()),
@@ -767,10 +966,10 @@ impl HostInner {
                     last = err;
                     thread::sleep(Duration::from_millis(50));
                 }
-                Err(err) => return Err(crate::keychain::redact(&err, &key)),
+                Err(err) => return Err(crate::keychain::redact(&err, key)),
             }
         }
-        Err(crate::keychain::redact(&last, &key))
+        Err(crate::keychain::redact(&last, key))
     }
 
     fn call_params_timeout(
@@ -931,6 +1130,58 @@ fn host_command(path: &Path, data_dir: &Path) -> Command {
         command.creation_flags(CREATE_NO_WINDOW);
     }
     command
+}
+
+fn encryption_choice(data_dir: &Path) -> String {
+    let Ok(text) = std::fs::read_to_string(data_dir.join("memory-settings.json")) else {
+        return String::new();
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return String::new();
+    };
+    value
+        .get("encryptionChoice")
+        .and_then(|item| item.as_str())
+        .unwrap_or("")
+        .to_string()
+}
+
+fn passphrase_path(data_dir: &Path) -> PathBuf {
+    data_dir.join("memory-passphrase.json")
+}
+
+fn passphrase_saved(data_dir: &Path) -> bool {
+    passphrase_path(data_dir).is_file()
+}
+
+fn save_passphrase(data_dir: &Path, seal: &crate::keychain::PassphraseSeal) -> Result<(), String> {
+    let body = serde_json::json!({ "salt": seal.salt, "check": seal.check });
+    std::fs::write(passphrase_path(data_dir), format!("{body}\n")).map_err(|err| err.to_string())
+}
+
+fn load_passphrase(data_dir: &Path) -> Result<crate::keychain::PassphraseSeal, String> {
+    let text = std::fs::read_to_string(passphrase_path(data_dir))
+        .map_err(|_| "Enter the memory passphrase to unlock.".to_string())?;
+    let value: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|_| "The passphrase record is not valid.".to_string())?;
+    let salt = value
+        .get("salt")
+        .and_then(|item| item.as_str())
+        .unwrap_or("")
+        .to_string();
+    let check = value
+        .get("check")
+        .and_then(|item| item.as_str())
+        .unwrap_or("")
+        .to_string();
+    if salt.is_empty() || check.is_empty() {
+        return Err("The passphrase record is not valid.".into());
+    }
+    Ok(crate::keychain::PassphraseSeal { salt, check })
+}
+
+fn remove_passphrase(data_dir: &Path) {
+    let _ = std::fs::remove_file(passphrase_path(data_dir));
 }
 
 fn encryption_enabled(data_dir: &Path) -> bool {

@@ -418,6 +418,8 @@ export class DesktopApp {
             embeddingModel: "",
             includeObservations: true,
             encryptionEnabled: false,
+            encryptionChoice: "",
+            encryptionPrompt: false,
             error: "",
           },
         ),
@@ -436,6 +438,32 @@ export class DesktopApp {
           throw new Error("Memory encryption is not available.");
         }
         return JSON.stringify(this.memory.encrypt(stringField(params, "key")));
+      },
+      memory_adopt_encryption: (params) => {
+        if (!this.memory.adoptEncryption) {
+          throw new Error("Memory encryption is not available.");
+        }
+        const record = asRecord(params);
+        return JSON.stringify(
+          this.memory.adoptEncryption({
+            key: stringField(params, "key"),
+            denied: record.denied === true,
+            mode: record.mode === "passphrase" ? "passphrase" : "keychain",
+            force: record.force === true,
+          }),
+        );
+      },
+      memory_keep_plaintext: () => {
+        if (!this.memory.keepPlaintext) {
+          throw new Error("Memory encryption is not available.");
+        }
+        return JSON.stringify(this.memory.keepPlaintext());
+      },
+      memory_disable_encryption: () => {
+        if (!this.memory.disableEncryption) {
+          throw new Error("Memory encryption is not available.");
+        }
+        return JSON.stringify(this.memory.disableEncryption());
       },
       memory_unlock: (params) => {
         if (!this.memory.unlock) {
