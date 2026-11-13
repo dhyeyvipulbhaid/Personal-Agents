@@ -538,12 +538,6 @@ export class DesktopApp {
         runTool: (call, signal) => this.runLocalTool(call, signal),
       });
       completed = true;
-      for (const fact of recalled) {
-        session.chat.messages.push({
-          role: "memory",
-          text: `${fact.text} (source ${fact.source})`,
-        });
-      }
     } catch (error) {
       const detail = this.failText(error, this.settings.get("chat"));
       const assistant = [...session.chat.messages]

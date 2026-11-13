@@ -569,12 +569,6 @@ button.danger {
   background: var(--sunken);
 }
 
-.memory-note {
-  margin: 0;
-  color: var(--muted);
-  font-size: 13px;
-}
-
 .composer textarea,
 .evidence,
 #builder-prompt,
