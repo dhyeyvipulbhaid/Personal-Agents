@@ -38,6 +38,10 @@ function element(tag: string, id: string, text: string): Node {
 const documentStub = {
   title: "Sign in",
   readyState: "complete",
+  visibilityState: "visible",
+  hasFocus() {
+    return true;
+  },
   get body() {
     return main();
   },
@@ -164,8 +168,12 @@ const app = new DesktopApp({
           return {};
         }
         const expression = String(params?.expression ?? "");
-        if (expression.includes("location.href")) {
-          return { result: { value: href } };
+        if (expression.includes("visibilityState")) {
+          return {
+            result: {
+              value: JSON.stringify({ href, state: "visible" }),
+            },
+          };
         }
         return {
           result: {
@@ -250,7 +258,9 @@ try {
 
   await send(page, "navigate to the sign in page");
   await page.getByRole("button", { name: "Approve" }).click();
-  await page.locator(".bubble.assistant", { hasText: "Done." }).waitFor();
+  await page
+    .locator(".bubble.assistant", { hasText: "Opened sign-in.test" })
+    .waitFor();
   if (Number(pageState.connects) !== 1) {
     throw new Error(`chrome connects were ${pageState.connects}`);
   }
@@ -263,7 +273,7 @@ try {
   await typeCard.getByRole("button", { name: "Approve" }).click();
   await page
     .locator(".bubble.assistant", { hasText: "Done." })
-    .nth(1)
+    .first()
     .waitFor();
 
   await send(page, "click Sign in");
@@ -273,7 +283,7 @@ try {
   await clickCard.getByRole("button", { name: "Approve" }).click();
   await page
     .locator(".bubble.assistant", { hasText: "Done." })
-    .nth(2)
+    .nth(1)
     .waitFor();
   if (Number(pageState.clicked) !== 1 || pageState.email !== "Ada") {
     throw new Error(

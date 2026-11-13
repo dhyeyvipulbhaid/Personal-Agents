@@ -39,6 +39,7 @@ export class ChatSession {
       model?: string;
       definitions: ToolDefinition[];
       runTool: (call: ToolCall, signal?: AbortSignal) => Promise<string>;
+      forced?: ToolCall;
     },
   ): Promise<ChatResult> {
     this.messages.push({ role: "user", text });
@@ -63,15 +64,17 @@ export class ChatSession {
       assistant.text += delta.token;
     };
     try {
-      let result = await this.adapter.chat(
-        {
-          model,
-          messages,
-          tools: tools?.definitions,
-        },
-        onDelta,
-        controller.signal,
-      );
+      let result = tools?.forced
+        ? { text: "", toolCall: tools.forced }
+        : await this.adapter.chat(
+            {
+              model,
+              messages,
+              tools: tools?.definitions,
+            },
+            onDelta,
+            controller.signal,
+          );
       const call = result.toolCall;
       const known =
         call !== undefined &&
@@ -97,6 +100,10 @@ export class ChatSession {
         if (refused) {
           assistant.text = refused;
           return { text: refused };
+        }
+        if (call.name === "browser.navigate") {
+          assistant.text = navigateReply(toolOutput);
+          return { text: assistant.text };
         }
         messages.push({
           role: "assistant",
@@ -259,6 +266,18 @@ function fixedDenial(parsed: ToolPayload): string {
       : `Not allowed: I didn't type into "${field}".`;
   }
   return `Not allowed: I didn't open ${host.length > 0 ? host : "that page"}.`;
+}
+
+function navigateReply(output: string): string {
+  try {
+    const parsed = JSON.parse(output) as { message?: string };
+    if (typeof parsed.message === "string" && parsed.message.length > 0) {
+      return parsed.message;
+    }
+  } catch {
+    // The tool result is plain text.
+  }
+  return "Could not confirm that the page opened in Chrome.";
 }
 
 function modelToolContent(output: string): string {

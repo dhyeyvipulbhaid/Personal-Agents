@@ -601,13 +601,9 @@ export class BrowserDrive {
       if (this.halted(signal)) {
         return null;
       }
-      const href = await this.pageHref(client);
-      if (href && hostMatches(href, url)) {
+      const href = await this.shownHref(client, url);
+      if (href) {
         return href;
-      }
-      const listed = await this.listedHref(client, url);
-      if (listed) {
-        return listed;
       }
       const remaining = deadline - this.clock();
       if (remaining <= 0) {
@@ -618,29 +614,43 @@ export class BrowserDrive {
     return null;
   }
 
-  private async listedHref(
+  private async shownHref(
     client: CdpClient,
     url: string,
   ): Promise<string | null> {
+    const info = await this.attachedTarget(client);
+    if (info && (info.type !== "page" || info.attached === false)) {
+      return null;
+    }
+    const proof = await this.pageProof(client);
+    if (
+      !proof?.href ||
+      proof.state !== "visible" ||
+      !hostMatches(proof.href, url)
+    ) {
+      return null;
+    }
+    if (info?.url && info.url.length > 0 && !hostMatches(info.url, url)) {
+      return null;
+    }
+    return proof.href;
+  }
+
+  private async attachedTarget(client: CdpClient): Promise<{
+    type?: string;
+    url?: string;
+    attached?: boolean;
+  } | null> {
     try {
-      const listed = (await this.command(
+      const info = (await this.command(
         client,
-        "Target.getTargets",
+        "Target.getTargetInfo",
         undefined,
         500,
       )) as {
-        targetInfos?: { type?: string; url?: string }[];
+        targetInfo?: { type?: string; url?: string; attached?: boolean };
       };
-      for (const target of listed.targetInfos ?? []) {
-        if (
-          target.type === "page" &&
-          typeof target.url === "string" &&
-          hostMatches(target.url, url)
-        ) {
-          return target.url;
-        }
-      }
-      return null;
+      return info.targetInfo ?? null;
     } catch (error) {
       if (isStaleConnection(error)) {
         throw error;
@@ -649,16 +659,33 @@ export class BrowserDrive {
     }
   }
 
-  private async pageHref(client: CdpClient): Promise<string | null> {
+  private async pageProof(client: CdpClient): Promise<{
+    href: string;
+    state: string;
+  } | null> {
     try {
       const payload = (await this.command(
         client,
         "Runtime.evaluate",
-        { expression: "location.href", returnByValue: true },
+        {
+          expression:
+            "JSON.stringify({href:location.href,state:document.visibilityState})",
+          returnByValue: true,
+        },
         READY_BUDGET_MS,
       )) as { result?: { value?: unknown } };
-      const value = payload.result?.value;
-      return typeof value === "string" ? value : null;
+      const raw = payload.result?.value;
+      if (typeof raw !== "string") {
+        return null;
+      }
+      const parsed = JSON.parse(raw) as { href?: unknown; state?: unknown };
+      if (typeof parsed.href !== "string") {
+        return null;
+      }
+      return {
+        href: parsed.href,
+        state: typeof parsed.state === "string" ? parsed.state : "",
+      };
     } catch (error) {
       if (isAbort(error) || isStaleConnection(error)) {
         throw error;

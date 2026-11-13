@@ -79,8 +79,12 @@ const app = new DesktopApp({
         }
         if (method === "Runtime.evaluate") {
           const expression = String(params?.expression ?? "");
-          if (expression.includes("location.href")) {
-            return { result: { value: href } };
+          if (expression.includes("visibilityState")) {
+            return {
+              result: {
+                value: JSON.stringify({ href, state: "visible" }),
+              },
+            };
           }
           return { result: { value: "complete" } };
         }
