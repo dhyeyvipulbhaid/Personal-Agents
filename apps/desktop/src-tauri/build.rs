@@ -1,6 +1,6 @@
 fn main() {
-    let attributes = tauri_build::Attributes::new().app_manifest(
-        tauri_build::AppManifest::new().commands(&[
+    let attributes =
+        tauri_build::Attributes::new().app_manifest(tauri_build::AppManifest::new().commands(&[
             "host_version",
             "note_displayed_host_version",
             "widgets",
@@ -23,12 +23,21 @@ fn main() {
             "mail_state",
             "mail_draft",
             "memory_list",
+            "memory_page",
             "memory_remember",
+            "memory_update",
             "memory_delete",
+            "memory_delete_many",
+            "memory_sweep",
+            "memory_graph",
+            "memory_observations",
+            "memory_reflect",
+            "memory_settings",
+            "memory_save_settings",
+            "memory_enable_encryption",
             "builder_plan",
             "builder_install",
             "open_link",
-        ]),
-    );
+        ]));
     tauri_build::try_build(attributes).expect("failed to run tauri build");
 }

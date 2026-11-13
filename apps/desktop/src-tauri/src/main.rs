@@ -6,6 +6,7 @@
 
 mod audit;
 mod host;
+mod keychain;
 mod rpc;
 
 use tauri::{Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
@@ -41,8 +42,18 @@ fn main() {
             host::mail_state,
             host::mail_draft,
             host::memory_list,
+            host::memory_page,
             host::memory_remember,
+            host::memory_update,
             host::memory_delete,
+            host::memory_delete_many,
+            host::memory_sweep,
+            host::memory_graph,
+            host::memory_observations,
+            host::memory_reflect,
+            host::memory_settings,
+            host::memory_save_settings,
+            host::memory_enable_encryption,
             host::builder_plan,
             host::builder_install,
             open_link
