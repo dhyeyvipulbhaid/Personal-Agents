@@ -5,6 +5,11 @@
   "identifier": "com.personalagents.desktop",
   "mainBinaryName": "personal-agents",
   "build": {
+    "beforeDevCommand": {
+      "script": "bun run --cwd ../.. build:host",
+      "wait": true
+    },
+    "beforeBuildCommand": "bun run --cwd ../.. build:host",
     "frontendDist": "../ui"
   },
   "app": {

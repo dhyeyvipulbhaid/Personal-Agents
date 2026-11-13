@@ -54,6 +54,8 @@ From the repository root, compile the agent host into one binary:
 bun run build:host
 ```
 
+`bun install` does not compile that binary. `bunx tauri dev` and `bunx tauri build`, run from `apps/desktop`, compile it first and then the window runs that binary. A dev session that is already open keeps the previous host until you quit and start it again.
+
 From `apps/desktop`, build the package:
 
 ```

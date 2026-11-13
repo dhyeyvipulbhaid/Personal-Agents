@@ -1,5 +1,6 @@
 import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
+import { randomUUID } from "node:crypto";
 import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -616,6 +617,161 @@ test("preview junk lists open pages, blocked navigation, and observations built 
     ]);
   } finally {
     memory.close();
+  }
+});
+
+const BANK_JUNK = [
+  "The user attempted to navigate to example.com.xn--ivg, but the assistant stopped the action.",
+  "The assistant opened example.com in Chrome.",
+  "The page is still loading, and the assistant is ready to assist once it's fully loaded.",
+  "The Apple official website is now open in the user's browser.",
+  "The assistant responded positively to the user's preference for green tea.",
+  "The Apple website is now open and displays products and services such as iPhones, Apple Watches...",
+  "The assistant offered to help the user explore specific products or services.",
+  "The Apple website is open and displays products and services such as iPhones, Apple Watches...",
+  "The Apple website is now open.",
+  "The assistant did not fetch information from the actual website.",
+  "The assistant's response is based on existing context and knowledge about the Apple website...",
+  "The assistant recommends visiting the website directly for the most current information.",
+  "The assistant opened apple.com in Chrome.",
+  "The assistant opened meta.com in Chrome.",
+  "The homepage of meta.com includes several CSS and JavaScript files that are loaded from ex...",
+  "The homepage of meta.com can be visited at [https://meta.com/](https://meta.com/).",
+  "The page promotes financial benefits through the Apple Card with cash back and Upgrade leasing...",
+  "Apple's page also features streaming services like Apple TV for shows and sports, along with...",
+  "The webpage includes promotional messaging around holiday gift options available through Apple...",
+  "The user attempted to navigate to meta.com, but the action was stopped.",
+];
+
+const BANK_KEEP = [
+  "Maya prefers morning meetings.",
+  "The user mentioned they like green tea.",
+  "My dentist is Dr. Patel.",
+  "Dr. Patel is the dentist who looks after the user's teeth.",
+];
+
+const OBSERVATION_JUNK = [
+  "The Apple website is open and showcases...",
+  "The Meta website is open and features products...",
+  "The assistant did not fetch information from the actual website...",
+];
+
+const OBSERVATION_KEEP = [
+  "The user and Dr. Patel are related through dental care.",
+  "The user has a preference for green tea...",
+];
+
+test("preview junk through memory_sweep lists this bank and skips durable facts", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pa-bank-junk-"));
+  const memory = new ChatMemory({
+    dataDir: dir,
+    extractor: createFakeExtractor(() => []),
+    reflector: createFakeReflector((input) => {
+      const patel = input.facts
+        .filter((fact) => fact.text.includes("Patel"))
+        .map((fact) => fact.id);
+      const tea = input.facts.find((fact) => fact.text.includes("green tea"));
+      const maya = input.facts.find((fact) =>
+        fact.text.startsWith("Maya prefers"),
+      );
+      return [
+        {
+          text: OBSERVATION_KEEP[0] ?? "",
+          confidence: 0.9,
+          sourceFactIds: patel,
+        },
+        {
+          text: OBSERVATION_KEEP[1] ?? "",
+          confidence: 0.9,
+          sourceFactIds: [tea?.id, maya?.id].filter(
+            (id): id is string => typeof id === "string",
+          ),
+        },
+      ];
+    }),
+  });
+  try {
+    for (const text of [...BANK_JUNK, ...BANK_KEEP]) {
+      await memory.remember(text);
+    }
+    await memory.reflect({});
+  } finally {
+    memory.close();
+  }
+
+  const file = join(dir, "memory-bank.sqlite");
+  const db = new Database(file);
+  // memory-bank scopeKey joins entity, topic, query, since, and until, so a
+  // reflect query of "health" is stored as a newline-wrapped key. Sweep must
+  // not trim or skip that value.
+  const scopeKey = ["", "", "health", "", ""].join("\n");
+  expect(scopeKey).toBe("\n\nhealth\n\n");
+  db.query("UPDATE observations SET scope_key = ? WHERE bank_id = 'chat'").run(
+    scopeKey,
+  );
+  const scope = db
+    .query("SELECT scope_key FROM observations WHERE bank_id = 'chat' LIMIT 1")
+    .get() as { scope_key: string };
+  expect(scope.scope_key).toBe(scopeKey);
+  const opened = db
+    .query("SELECT id FROM facts WHERE text = ?")
+    .get("The assistant opened example.com in Chrome.") as { id: string };
+  const tea = db
+    .query("SELECT id FROM facts WHERE text = ?")
+    .get("The user mentioned they like green tea.") as { id: string };
+  const now = new Date().toISOString();
+  const insertObservation = db.query(
+    `INSERT INTO observations (
+       id, bank_id, scope_key, text, confidence, created_at, updated_at
+     ) VALUES (?, 'chat', ?, ?, 0.8, ?, ?)`,
+  );
+  const insertSource = db.query(
+    `INSERT INTO observation_sources (observation_id, fact_id, bank_id)
+     VALUES (?, ?, 'chat')`,
+  );
+  for (const text of OBSERVATION_JUNK) {
+    const id = randomUUID();
+    insertObservation.run(id, scope.scope_key, text, now, now);
+    insertSource.run(id, opened.id);
+    insertSource.run(id, tea.id);
+  }
+  db.close();
+
+  const again = new ChatMemory({
+    dataDir: dir,
+    extractor: createFakeExtractor(() => []),
+  });
+  const app = new DesktopApp({
+    dataDir: dir,
+    memory: again,
+    adapter: silentAdapter(),
+    probe: async () => "stopped",
+  });
+  await app.start();
+  try {
+    const preview = JSON.parse(
+      await app.methods().memory_sweep({ dryRun: true }),
+    ) as { candidates: { text: string }[]; dryRun: boolean };
+    expect(preview.dryRun).toBe(true);
+    expect(preview.candidates.map((item) => item.text).sort()).toEqual(
+      [...BANK_JUNK, ...OBSERVATION_JUNK].sort(),
+    );
+    const listed = preview.candidates.map((item) => item.text);
+    for (const text of [...BANK_KEEP, ...OBSERVATION_KEEP]) {
+      expect(listed).not.toContain(text);
+    }
+    await app.methods().memory_sweep({ dryRun: false });
+    expect(
+      again
+        .list()
+        .map((fact) => fact.text)
+        .sort(),
+    ).toEqual([...BANK_KEEP].sort());
+    expect(
+      (await again.observations()).map((item) => item.text).sort(),
+    ).toEqual([...OBSERVATION_KEEP].sort());
+  } finally {
+    again.close();
   }
 });
 
