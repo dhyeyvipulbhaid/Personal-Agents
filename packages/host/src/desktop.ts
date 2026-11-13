@@ -1117,6 +1117,7 @@ function toolPrompt(): string {
     "Do not request a page visit just because the answer is missing.",
     "Browser actions still wait for approval.",
     "Do not say you cannot browse.",
+    "If a browser tool result includes no page text, say only whether the page opened. Do not describe the page.",
   ].join(" ");
 }
 
