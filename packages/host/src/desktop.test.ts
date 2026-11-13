@@ -482,10 +482,8 @@ test("a chat request sends tools to ollama and runs the tool call", async () => 
     );
     expect(
       bodies.some((body) =>
-        body.messages?.some(
-          (message) =>
-            message.role === "tool" &&
-            message.content.includes("Example Domain"),
+        body.messages?.some((message) =>
+          message.content.includes("Example Domain"),
         ),
       ),
     ).toBe(true);
@@ -601,11 +599,13 @@ test("browser.read returns the page text after one approval", async () => {
     expect(cards).toHaveLength(1);
     expect(cards[0]?.text).toContain("visit example.com");
     expect(cards[0]?.text).toContain("(approved)");
-    const tool = seen
+    const followUp = seen
       .flatMap((request) => request.messages)
-      .find((message) => message.role === "tool");
-    expect(tool?.content).toContain("Example Domain");
-    expect(tool?.content).toContain("illustrative examples in documents");
+      .map((message) => message.content)
+      .join("\n");
+    expect(followUp).toContain("Example Domain");
+    expect(followUp).toContain("illustrative examples in documents");
+    expect(followUp).toContain("It is not open");
     expect(
       state.messages
         .filter((message) => message.role === "assistant")
@@ -1189,6 +1189,9 @@ function expectBrowseOnlyWhenAsked(content: string | undefined): void {
   expect(content).toContain(
     "If a browser tool result includes no page text, say only whether the page opened. Do not describe the page.",
   );
+  expect(content).toContain(
+    "A background read does not open the site. Do not say the page is open or that you opened it.",
+  );
 }
 
 function textResponse(content: string): Response {
@@ -1368,6 +1371,66 @@ test("a question about a site's page reads in the background and does not open C
     expect(reply).toContain("https://apple.com/");
     expect(reply).not.toContain("iPhone");
     expect(reply).not.toContain("Opened");
+  } finally {
+    globalThis.fetch = originalFetch;
+    app.close();
+  }
+});
+
+test("reading a named site does not ask again and does not say it opened", async () => {
+  const urls: string[] = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    if (String(input).includes("apple.com")) {
+      return new Response(
+        "<title>Apple</title><main><p>Live store text</p></main>",
+      );
+    }
+    return originalFetch(input);
+  }) as typeof fetch;
+  const app = new DesktopApp({
+    dataDir: mkdtempSync(join(tmpdir(), "pa-read-named-")),
+    adapter: {
+      async listModels() {
+        return [];
+      },
+      async chat() {
+        return {
+          text: "The Apple website is open and displays a range of products.",
+        };
+      },
+      async structured<T>(): Promise<T> {
+        return {} as T;
+      },
+    },
+    probe: async () => "running",
+    memoryExtractor: createFakeExtractor(() => []),
+    chromePath: "chrome",
+    browserConnect: async () => pageClient(urls),
+  });
+  await app.start();
+  const methods = app.methods();
+  try {
+    const sent = methods.chat_send({ text: "Read apple.com" });
+    const asked = await waitForApproval(methods);
+    expect(asked.kind).toBe("none");
+    const state = JSON.parse(await sent) as {
+      pending: { id: string }[];
+      messages: { role: string; text: string }[];
+    };
+    expect(urls).toEqual([]);
+    expect(state.pending).toEqual([]);
+    const reply = state.messages
+      .filter((message) => message.role === "assistant")
+      .at(-1)?.text;
+    expect(reply ?? "").not.toMatch(/\bopen(?:ed)?\b/i);
+    expect(reply).toContain("https://apple.com/");
+    expect(
+      state.messages.some(
+        (message) =>
+          message.role === "approval" && message.text.includes("(read)"),
+      ),
+    ).toBe(true);
   } finally {
     globalThis.fetch = originalFetch;
     app.close();

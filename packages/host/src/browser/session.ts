@@ -96,6 +96,15 @@ export class BrowserSession {
     return "opened";
   }
 
+  /** The user named this site, so the next read does not ask again. */
+  trust(url: string): void {
+    try {
+      this.seenHosts.add(new URL(url).host);
+    } catch {
+      // A bad URL still fails when the read starts.
+    }
+  }
+
   note(step: string): void {
     if (!this.stopped) {
       this.steps.push(step);
