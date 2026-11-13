@@ -232,23 +232,35 @@ function currentTurn(messages) {
 }
 
 function appendThinking(messages) {
-  if (!sending || optimisticText.length === 0) {
+  if (!sending) {
     return;
   }
   const turn = currentTurn(messages);
-  const answered = turn.some(
-    (message) =>
-      (message.role === "assistant" &&
-        String(message.text ?? "").trim().length > 0) ||
-      (message.role === "approval" && !settled(message.text)),
+  const pendingCard = turn.some(
+    (message) => message.role === "approval" && !settled(message.text),
   );
-  if (answered) {
+  if (pendingCard) {
+    return;
+  }
+  let toolAt = -1;
+  for (let index = 0; index < turn.length; index += 1) {
+    const message = turn[index];
+    if (message.role === "approval" && settled(message.text)) {
+      toolAt = index;
+    }
+  }
+  const hasAnswer = turn.some(
+    (message) =>
+      message.role === "assistant" &&
+      String(message.text ?? "").trim().length > 0,
+  );
+  if (hasAnswer || (optimisticText.length === 0 && toolAt < 0)) {
     return;
   }
   const echoed = messages.some(
     (message) => message.role === "user" && message.text === optimisticText,
   );
-  if (!echoed) {
+  if (!echoed && optimisticText.length > 0) {
     const user = document.createElement("div");
     user.className = "bubble user";
     user.textContent = optimisticText;
@@ -257,7 +269,7 @@ function appendThinking(messages) {
   const thought = document.createElement("div");
   thought.className = "bubble assistant";
   thought.dataset.thinking = "1";
-  thought.textContent = "Thinking…";
+  thought.textContent = toolAt >= 0 ? "Writing answer…" : "Thinking…";
   thread.append(thought);
 }
 
@@ -321,7 +333,10 @@ function settledLine(text) {
   const raw = String(text ?? "");
   const denied = raw.includes("(denied)");
   const cancelled = raw.includes("(cancelled)");
-  const body = raw.replace(/\s*\((approved|denied|cancelled)\)\s*/g, "").trim();
+  const body = raw
+    .replace(/\s*\((?:approved|denied|cancelled|read)\)\s*/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
   const click = /click "([^"]+)"/i.exec(body);
   if (click) {
     if (denied) {
