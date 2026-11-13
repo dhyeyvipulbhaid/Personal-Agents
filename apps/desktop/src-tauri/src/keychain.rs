@@ -4,7 +4,9 @@
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 
+#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
 pub const SERVICE: &str = "com.personalagents.desktop";
+#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
 pub const ACCOUNT: &str = "memory-bank";
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]

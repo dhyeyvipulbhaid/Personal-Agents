@@ -7,7 +7,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, SyncSender};
+use std::sync::mpsc::{self, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 use tauri::Manager;
 
 use crate::audit;
+use crate::keychain::SecretStore;
 use crate::rpc::{audit_line, encode_request_params, parse_response, FrameParser};
 
 const CALL_TIMEOUT: Duration = Duration::from_secs(10);
@@ -80,10 +81,6 @@ impl HostHandle {
             .spawn(move || supervisor.supervise())
             .map_err(|err| err.to_string())?;
         Ok(Self { inner })
-    }
-
-    fn inner(&self) -> HostHandle {
-        self.clone()
     }
 
     pub fn stop(&self) {
@@ -721,7 +718,7 @@ impl HostInner {
         if !encryption_enabled(&self.data_dir) {
             return Ok(());
         }
-        let key = match crate::keychain::OsSecretStore.get(&crate::keychain::OsSecretStore) {
+        let key = match crate::keychain::OsSecretStore.get() {
             Ok(Some(value)) if !value.trim().is_empty() => value,
             Ok(_) => {
                 return Err(
@@ -750,10 +747,6 @@ impl HostInner {
         Err(crate::keychain::redact(&last, &key))
     }
 
-    fn call_params(&self, method: &str, params: serde_json::Value) -> Result<String, String> {
-        self.call_params_timeout(method, params, CALL_TIMEOUT)
-    }
-
     fn call_params_timeout(
         &self,
         method: &str,
@@ -774,10 +767,7 @@ impl HostInner {
         timeout: Duration,
     ) -> Result<String, String> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let (sender, receiver): (
-            SyncSender<Result<String, String>>,
-            Receiver<Result<String, String>>,
-        ) = mpsc::sync_channel(1);
+        let (sender, receiver) = mpsc::sync_channel(1);
         let pending = {
             let slot = self.active.lock().unwrap();
             let Some(active) = slot.as_ref() else {
