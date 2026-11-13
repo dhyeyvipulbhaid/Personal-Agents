@@ -588,11 +588,12 @@ export class ChatMemory implements ChatMemoryClient {
   }
 
   status(): MemoryStatus {
+    const recorded = readEncryptionSource(this.file);
     return {
       embeddingModel: this.prefs.embeddingModel,
       includeObservations: this.prefs.includeObservations,
       encryptionEnabled: this.prefs.encryptionEnabled,
-      encryptionChoice: this.prefs.encryptionChoice,
+      encryptionChoice: recorded || this.prefs.encryptionChoice,
       encryptionPrompt: this.prefs.encryptionPrompt,
       error: this.openError,
     };
@@ -655,6 +656,7 @@ export class ChatMemory implements ChatMemoryClient {
     this.prefs.encryptionPrompt = false;
     this.prefs.encryptionEnabled = true;
     this.openError = "";
+    writeEncryptionSource(this.file, mode);
     this.writePrefs();
     return this.status();
   }
@@ -1231,6 +1233,47 @@ function clearEncryptionMarker(file: string): void {
     db.query("DELETE FROM schema_meta WHERE key = 'encryption'").run();
   } catch {
     // The table is absent until the bank has been opened once.
+  } finally {
+    db.close();
+  }
+}
+
+function readEncryptionSource(file: string): EncryptionChoice {
+  if (!existsSync(file)) {
+    return "";
+  }
+  let db: Database | null = null;
+  try {
+    db = new Database(file, { readonly: true });
+    const row = db
+      .query("SELECT value FROM schema_meta WHERE key = 'encryption_source'")
+      .get() as { value: string } | null;
+    if (
+      row?.value === "passphrase" ||
+      row?.value === "keychain" ||
+      row?.value === "off"
+    ) {
+      return row.value;
+    }
+    return "";
+  } catch {
+    return "";
+  } finally {
+    db?.close();
+  }
+}
+
+function writeEncryptionSource(
+  file: string,
+  source: "keychain" | "passphrase",
+): void {
+  const db = new Database(file);
+  try {
+    db.exec("PRAGMA busy_timeout = 5000;");
+    db.query(
+      `INSERT INTO schema_meta (key, value) VALUES ('encryption_source', ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+    ).run(source);
   } finally {
     db.close();
   }

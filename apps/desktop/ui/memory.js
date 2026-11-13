@@ -61,15 +61,41 @@ function noteKeyProblem(detail) {
   if (unlock) {
     unlock.hidden = !needsPassphrase;
   }
-  const passphraseRow = document.getElementById("passphrase-row");
-  if (passphraseRow) {
-    passphraseRow.hidden = !(
-      needsPassphrase || document.getElementById("use-passphrase").checked
-    );
-  }
+  syncPassphraseRow();
   status.textContent = "";
   if (reflectStatus.textContent.startsWith("Reflecting")) {
     reflectStatus.textContent = "";
+  }
+}
+
+function encryptionSourceText(settings) {
+  if (settings.encryptionChoice === "passphrase") {
+    return "Memory is encrypted with a passphrase.";
+  }
+  return "Memory is encrypted. The key is in the macOS Keychain or Windows Credential Manager.";
+}
+
+let ignorePassphraseChange = false;
+
+function setPassphraseChecked(checked) {
+  const box = document.getElementById("use-passphrase");
+  if (!box) {
+    return;
+  }
+  ignorePassphraseChange = true;
+  box.checked = checked;
+  ignorePassphraseChange = false;
+  syncPassphraseRow();
+}
+
+function syncPassphraseRow() {
+  const notice = document.getElementById("encryption-choice");
+  const noticeOpen = notice && !notice.hidden;
+  const box = document.getElementById("use-passphrase");
+  const row = document.getElementById("passphrase-row");
+  const encrypted = document.getElementById("encrypt-memory").checked;
+  if (row) {
+    row.hidden = noticeOpen || !box.checked || encrypted;
   }
 }
 
@@ -275,6 +301,7 @@ async function showSettings() {
     if (unlockPanel) {
       unlockPanel.hidden = !locked;
     }
+    setPassphraseChecked(settings.encryptionChoice === "passphrase");
     const restore = document.getElementById("restore-backup");
     if (settings.error && isKeyError(settings.error)) {
       noteKeyProblem(settings.error);
@@ -282,8 +309,7 @@ async function showSettings() {
       encryptionStatus.textContent = settings.error;
       restore.hidden = true;
     } else if (settings.encryptionEnabled) {
-      encryptionStatus.textContent =
-        "Memory is encrypted. The key is in the macOS Keychain or Windows Credential Manager.";
+      encryptionStatus.textContent = encryptionSourceText(settings);
       restore.hidden = true;
     } else {
       restore.hidden = true;
@@ -646,12 +672,12 @@ document
 
 document.getElementById("passphrase-row").hidden = true;
 
-document
-  .getElementById("use-passphrase")
-  .addEventListener("change", (event) => {
-    document.getElementById("passphrase-row").hidden =
-      !event.currentTarget.checked;
-  });
+document.getElementById("use-passphrase").addEventListener("change", () => {
+  if (ignorePassphraseChange) {
+    return;
+  }
+  syncPassphraseRow();
+});
 
 document.getElementById("choice-stay-plain").addEventListener("click", () => {
   window.pa

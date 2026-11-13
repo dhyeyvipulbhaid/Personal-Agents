@@ -44,6 +44,8 @@ test("reflect now reloads observations, clears the status, and surfaces errors",
   expect(page).toContain('id="choice-passphrase-confirm" type="password"');
   expect(page).toContain('id="unlock-passphrase-input" type="password"');
   expect(source).toContain("passphraseProblem");
+  expect(source).toContain("encryptionSourceText");
+  expect(source).toContain("noticeOpen || !box.checked || encrypted");
   expect(source).toContain(
     "setEncryptChecked(encrypt, settings.encryptionEnabled === true)",
   );
