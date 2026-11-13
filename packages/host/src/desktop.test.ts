@@ -389,7 +389,12 @@ test("a chat request sends tools to ollama and runs the tool call", async () => 
     return originalFetch(input);
   }) as typeof fetch;
   const connector = new OllamaConnector(async (_url, init) => {
-    const body = JSON.parse(String(init?.body)) as (typeof bodies)[number];
+    const raw = String(init?.body ?? "");
+    const embedded = embeddingResponse(raw);
+    if (embedded) {
+      return embedded;
+    }
+    const body = JSON.parse(raw) as (typeof bodies)[number];
     bodies.push(body);
     // qwen3:4b calls the tool again when the follow-up still offers tools.
     if (body.tools && body.tools.length > 0) {
@@ -1146,6 +1151,25 @@ type OllamaBody = {
   messages?: { role: string; content: string }[];
 };
 
+function embeddingResponse(raw: string): Response | null {
+  try {
+    const body = JSON.parse(raw) as {
+      messages?: unknown;
+      input?: unknown;
+      prompt?: unknown;
+    };
+    if (body.messages || (body.input == null && body.prompt == null)) {
+      return null;
+    }
+  } catch {
+    return null;
+  }
+  return Response.json({
+    embeddings: [[0.1, 0.2, 0.3]],
+    embedding: [0.1, 0.2, 0.3],
+  });
+}
+
 function toolCallResponse(): Response {
   return new Response(
     JSON.stringify({
@@ -1211,9 +1235,14 @@ async function browserHarness(
     }
     return originalFetch(input);
   }) as typeof fetch;
-  const connector = new OllamaConnector(async (_url, init) =>
-    reply(JSON.parse(String(init?.body)) as OllamaBody),
-  );
+  const connector = new OllamaConnector(async (_url, init) => {
+    const raw = String(init?.body ?? "");
+    const embedded = embeddingResponse(raw);
+    if (embedded) {
+      return embedded;
+    }
+    return reply(JSON.parse(raw) as OllamaBody);
+  });
   const app = new DesktopApp({
     dataDir: mkdtempSync(join(tmpdir(), "pa-browser-chat-")),
     adapter: connector,

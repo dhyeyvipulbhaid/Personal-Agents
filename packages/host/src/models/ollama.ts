@@ -65,6 +65,47 @@ export class OllamaConnector implements ModelAdapter {
     );
   }
 
+  /**
+   * Embedding for memory-bank. Tries the current Ollama route, then the older one.
+   * A failure throws. The bank still saves the fact and leaves the vector empty.
+   */
+  async embed(model: string, text: string): Promise<number[]> {
+    const name = model.trim();
+    if (name.length === 0) {
+      throw new Error("An embedding model is required.");
+    }
+    const primary = await this.postJson(`${this.origin}/api/embed`, {
+      model: name,
+      input: text,
+    });
+    if (primary.ok) {
+      const vector = vectorFromPayload(primary.body);
+      if (!vector) {
+        throw new Error(
+          `Ollama at ${this.origin} did not return an embedding vector.`,
+        );
+      }
+      return vector;
+    }
+    if (primary.status === 404) {
+      const legacy = await this.postJson(`${this.origin}/api/embeddings`, {
+        model: name,
+        prompt: text,
+      });
+      if (legacy.ok) {
+        const vector = vectorFromPayload(legacy.body);
+        if (!vector) {
+          throw new Error(
+            `Ollama at ${this.origin} did not return an embedding vector.`,
+          );
+        }
+        return vector;
+      }
+      throw new Error(embedFailure(this.origin, name, legacy.status));
+    }
+    throw new Error(embedFailure(this.origin, name, primary.status));
+  }
+
   async structured<T>(request: ChatRequest): Promise<T> {
     const payload: Record<string, unknown> = {
       model: request.model,
@@ -83,6 +124,29 @@ export class OllamaConnector implements ModelAdapter {
       message?: { content?: string };
     };
     return JSON.parse(stripThink(body.message?.content ?? "")) as T;
+  }
+
+  private async postJson(
+    url: string,
+    body: unknown,
+  ): Promise<{ ok: boolean; status: number; body: unknown }> {
+    let response: Response;
+    try {
+      response = await this.http(url, {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : "unreachable";
+      throw new Error(`Ollama is not reachable at ${this.origin}. ${detail}`);
+    }
+    let payload: unknown = null;
+    try {
+      payload = await response.json();
+    } catch {
+      payload = null;
+    }
+    return { ok: response.ok, status: response.status, body: payload };
   }
 
   private async showCapabilities(name: string): Promise<string[] | undefined> {
@@ -133,6 +197,36 @@ function ollamaMessage(message: ChatTurn): Record<string, unknown> {
     payload.name = message.toolName;
   }
   return payload;
+}
+
+function embedFailure(origin: string, model: string, status: number): string {
+  return `Ollama at ${origin} returned HTTP ${status} for ${model}. Run \`ollama pull ${model}\`.`;
+}
+
+function vectorFromPayload(payload: unknown): number[] | null {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+  const record = payload as Record<string, unknown>;
+  const batch = record.embeddings;
+  if (Array.isArray(batch) && batch.length > 0) {
+    return finiteNumbers(batch[0]);
+  }
+  return finiteNumbers(record.embedding);
+}
+
+function finiteNumbers(value: unknown): number[] | null {
+  if (!Array.isArray(value) || value.length === 0) {
+    return null;
+  }
+  const numbers: number[] = [];
+  for (const item of value) {
+    if (typeof item !== "number" || !Number.isFinite(item)) {
+      return null;
+    }
+    numbers.push(item);
+  }
+  return numbers;
 }
 
 function capabilitiesOf(
