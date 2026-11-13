@@ -314,6 +314,61 @@ test("a model without tool support cannot be the agent model", () => {
   expect(settings.get("agent")).toBe("llama");
 });
 
+test("a navigate result without page text does not describe the page", async () => {
+  const seen: string[] = [];
+  const adapter: ModelAdapter = {
+    async listModels() {
+      return [withTools];
+    },
+    async chat(request) {
+      const tool = request.messages.find((message) => message.role === "tool");
+      if (tool) {
+        seen.push(tool.content);
+      }
+      if (
+        request.tools?.some((item) => item.function.name === "browser.navigate")
+      ) {
+        return {
+          text: "",
+          toolCall: {
+            name: "browser.navigate",
+            arguments: JSON.stringify({ url: "https://apple.com/" }),
+          },
+        };
+      }
+      return { text: "Opened apple.com." };
+    },
+    async structured<T>(): Promise<T> {
+      return {} as T;
+    },
+  };
+  const settings = new ModelSettings();
+  settings.set("chat", "llama", [withTools]);
+  const session = new ChatSession(adapter, settings, new Approvals(() => {}));
+  await session.send("open apple.com", undefined, {
+    definitions: [
+      {
+        type: "function",
+        function: {
+          name: "browser.navigate",
+          description: "Open a URL in Chrome.",
+          parameters: {},
+        },
+      },
+    ],
+    runTool: async () =>
+      JSON.stringify({
+        ok: true,
+        allowed: true,
+        url: "https://apple.com/",
+        message: "Opened apple.com in Chrome.",
+      }),
+  });
+  expect(seen).toEqual(["Opened apple.com. No page text was returned."]);
+  expect(seen.join("\n")).not.toContain("iPhone");
+  expect(seen.join("\n")).not.toContain("https://apple.com/");
+});
+
 test("changing the chat model takes effect on the next message", async () => {
   const seen: string[] = [];
   const adapter: ModelAdapter = {

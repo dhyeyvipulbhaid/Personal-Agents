@@ -79,6 +79,7 @@ export class ChatSession {
           true;
       let handled = false;
       let toolOutput = "";
+      let forModel = "";
       if (call && tools && known) {
         handled = true;
         assistant.text = "";
@@ -109,9 +110,10 @@ export class ChatSession {
             },
           ],
         });
+        forModel = modelToolContent(toolOutput);
         messages.push({
           role: "tool",
-          content: toolOutput,
+          content: forModel,
           toolName: call.name,
         });
         assistant.text = "";
@@ -133,7 +135,7 @@ export class ChatSession {
       if (result.text.trim().length > 0) {
         assistant.text = result.text;
       } else if (handled) {
-        assistant.text = replyFromTool(toolOutput);
+        assistant.text = replyFromTool(forModel);
       }
       if (result.toolCall && !handled) {
         this.raiseApproval(result.toolCall.name, result.toolCall.arguments);
@@ -257,6 +259,32 @@ function fixedDenial(parsed: ToolPayload): string {
       : `Not allowed: I didn't type into "${field}".`;
   }
   return `Not allowed: I didn't open ${host.length > 0 ? host : "that page"}.`;
+}
+
+function modelToolContent(output: string): string {
+  try {
+    const parsed = JSON.parse(output) as ToolPayload & {
+      ok?: boolean;
+      message?: string;
+    };
+    const pageText = typeof parsed.text === "string" ? parsed.text.trim() : "";
+    if (pageText.length > 0) {
+      return output;
+    }
+    if (
+      parsed.ok === true &&
+      typeof parsed.message === "string" &&
+      parsed.message.startsWith("Opened ")
+    ) {
+      const host = hostOf(parsed.url);
+      return host.length > 0
+        ? `Opened ${host}. No page text was returned.`
+        : "Opened the page. No page text was returned.";
+    }
+  } catch {
+    // The tool result is plain text.
+  }
+  return output;
 }
 
 function hostOf(url: string | undefined): string {
