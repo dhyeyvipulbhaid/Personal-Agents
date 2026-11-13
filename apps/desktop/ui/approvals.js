@@ -2,6 +2,7 @@ const root = document.getElementById("requests");
 const hint = document.getElementById("approval-help");
 let items = [];
 let selected = 0;
+const lockedCards = new Map();
 
 function snoozeUntil(choice) {
   const hour = 60 * 60 * 1000;
@@ -57,6 +58,10 @@ function lockCard(card, statusText) {
     return false;
   }
   card.dataset.locked = "1";
+  const id = card.dataset.id;
+  if (id) {
+    lockedCards.set(id, statusText);
+  }
   const row = card.querySelector(".button-row");
   for (const node of card.querySelectorAll("button")) {
     node.disabled = true;
@@ -90,10 +95,10 @@ function button(label, className, onClick) {
   node.className = className;
   node.textContent = label;
   node.addEventListener("click", () => {
-    onClick().catch((error) => {
+    onClick().catch(() => {
       const note = document.createElement("p");
       note.className = "notice";
-      note.textContent = window.pa.explain(error, "Approvals");
+      note.textContent = "That request did not finish. The card stays locked.";
       root.prepend(note);
     });
   });
@@ -102,6 +107,12 @@ function button(label, className, onClick) {
 
 function render(next) {
   items = next;
+  const alive = new Set(items.map((item) => item.id));
+  for (const id of lockedCards.keys()) {
+    if (!alive.has(id)) {
+      lockedCards.delete(id);
+    }
+  }
   root.replaceChildren();
   if (items.length === 0) {
     root.textContent = "No waiting requests";
@@ -195,6 +206,9 @@ function render(next) {
       info,
       buttons,
     );
+    if (lockedCards.has(item.id)) {
+      lockCard(block, lockedCards.get(item.id));
+    }
     root.append(block);
   });
 }

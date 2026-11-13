@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { encodeNotification } from "../rpc.ts";
 import {
   type BrowserActivity,
   BrowserPreview,
@@ -90,6 +91,31 @@ test("a pending approval is shown before Chrome starts", async () => {
   expect(snap.streaming).toBe(false);
   await preview.pump();
   expect(frames).toBe(0);
+});
+
+test("a huge capture is dropped before it can fill an rpc frame", async () => {
+  const huge = "A".repeat(1_200_000);
+  const preview = new BrowserPreview(
+    {
+      sessionOpen: () => true,
+      lastActionAt: () => 1_000,
+      currentStep: () => "navigate to www.apple.com",
+      pageUrl: () => "https://www.apple.com/",
+      site: () => "www.apple.com",
+      pendingApproval: () => undefined,
+      recentActions: () => [],
+      capture: async () => huge,
+    },
+    () => {},
+    () => 1_500,
+    () => () => {},
+  );
+  preview.watch(true);
+  const payload = await preview.pump();
+  expect(payload.thumbnail.length).toBeLessThan(200_000);
+  expect(
+    encodeNotification("browser_activity", payload).byteLength,
+  ).toBeLessThan(1_000_000);
 });
 
 test("a visible subscriber starts frames and hiding or idle stops them", async () => {

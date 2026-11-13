@@ -16,7 +16,11 @@ A denial on the first card means the reply says the visit was not allowed, and t
 
 Send: `Navigate to https://example.com`
 
-Approve the card that says `navigate to example.com`. A Chrome window opens on screen, using a separate profile under the app data folder. It is the Chrome already installed on the Mac, not a browser bundled with the app.
+Approve the card that says `navigate to example.com`. The Approve and Deny buttons switch to `Opening example.com…` as soon as you press Approve. A Chrome window opens on screen, using a separate profile under the app data folder. It is the Chrome already installed on the Mac, not a browser bundled with the app.
+
+Send: `Navigate to https://www.apple.com`
+
+Approve the card that says `navigate to www.apple.com`. The buttons lock immediately on `Opening www.apple.com…` and stay locked if Chrome is slow. Chrome opens. Chat does not show “Quit Personal Agents and open it again.” The reply can say the page is still loading.
 
 Send: `Click "More information..."`
 

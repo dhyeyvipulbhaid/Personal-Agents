@@ -27,9 +27,8 @@ pub(crate) fn encode_request_params(
     };
     check_method(method)?;
     let params_text = serde_json::to_string(params).map_err(|err| err.to_string())?;
-    let body = format!(
-        r#"{{"jsonrpc":"2.0","id":{id},"method":"{method}","params":{params_text}}}"#
-    );
+    let body =
+        format!(r#"{{"jsonrpc":"2.0","id":{id},"method":"{method}","params":{params_text}}}"#);
     Ok(encode_frame(body.as_bytes()))
 }
 
@@ -63,8 +62,8 @@ pub(crate) fn next_frame(buf: &mut Vec<u8>) -> Result<Option<Vec<u8>>, String> {
     let Some(end) = buf.windows(4).position(|window| window == b"\r\n\r\n") else {
         return Ok(None);
     };
-    let header = std::str::from_utf8(&buf[..end])
-        .map_err(|_| "frame header is not utf-8".to_string())?;
+    let header =
+        std::str::from_utf8(&buf[..end]).map_err(|_| "frame header is not utf-8".to_string())?;
     let length: usize = header
         .strip_prefix("Content-Length: ")
         .and_then(|value| value.parse().ok())
@@ -81,9 +80,96 @@ pub(crate) fn next_frame(buf: &mut Vec<u8>) -> Result<Option<Vec<u8>>, String> {
     Ok(Some(body))
 }
 
+/// Reads host stdout. One oversized frame is skipped so later replies still arrive.
+pub(crate) struct FrameParser {
+    buffer: Vec<u8>,
+    skip: usize,
+}
+
+impl FrameParser {
+    pub(crate) fn new() -> Self {
+        Self {
+            buffer: Vec::new(),
+            skip: 0,
+        }
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.buffer.clear();
+        self.skip = 0;
+    }
+
+    pub(crate) fn push(&mut self, chunk: &[u8]) -> Result<Vec<Vec<u8>>, String> {
+        let mut rest = chunk;
+        if self.skip > 0 {
+            let drop_count = self.skip.min(rest.len());
+            self.skip -= drop_count;
+            rest = &rest[drop_count..];
+        }
+        self.buffer.extend_from_slice(rest);
+        let mut frames = Vec::new();
+        loop {
+            match next_frame(&mut self.buffer) {
+                Ok(None) => {
+                    if self.buffer.len() > MAX_FRAME_BYTES {
+                        self.buffer.clear();
+                        return Err("frame is too large".into());
+                    }
+                    break;
+                }
+                Ok(Some(body)) => frames.push(body),
+                Err(err) if err == "frame is too large" => {
+                    if !self.discard_oversized() {
+                        break;
+                    }
+                }
+                Err(err) => {
+                    self.buffer.clear();
+                    return Err(err);
+                }
+            }
+        }
+        Ok(frames)
+    }
+
+    fn discard_oversized(&mut self) -> bool {
+        let Some(end) = self
+            .buffer
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+        else {
+            self.buffer.clear();
+            return false;
+        };
+        let Ok(header) = std::str::from_utf8(&self.buffer[..end]) else {
+            self.buffer.clear();
+            return false;
+        };
+        let Some(length) = header
+            .strip_prefix("Content-Length: ")
+            .and_then(|value| value.parse::<usize>().ok())
+        else {
+            self.buffer.clear();
+            return false;
+        };
+        let start = end + 4;
+        let Some(total) = start.checked_add(length) else {
+            self.buffer.clear();
+            return false;
+        };
+        if self.buffer.len() >= total {
+            self.buffer.drain(..total);
+            true
+        } else {
+            self.skip = total - self.buffer.len();
+            self.buffer.clear();
+            false
+        }
+    }
+}
+
 pub(crate) fn parse_response(body: &[u8]) -> Result<(u64, Result<String, String>), String> {
-    let response: RpcResponse =
-        serde_json::from_slice(body).map_err(|err| err.to_string())?;
+    let response: RpcResponse = serde_json::from_slice(body).map_err(|err| err.to_string())?;
     let value = if let Some(error) = response.error {
         Err(error.message)
     } else if let Some(result) = response.result {
@@ -147,6 +233,20 @@ mod tests {
     }
 
     #[test]
+    fn an_oversized_frame_does_not_drop_the_next_one() {
+        let mut parser = FrameParser::new();
+        let huge = 1_500_000usize;
+        let mut bytes = format!("Content-Length: {huge}\r\n\r\n").into_bytes();
+        bytes.extend(std::iter::repeat(b'x').take(huge));
+        bytes.extend(encode_frame(br#"{"jsonrpc":"2.0","id":7,"result":"pong"}"#));
+        let mut got = Vec::new();
+        for chunk in bytes.chunks(100_000) {
+            got.extend(parser.push(chunk).unwrap());
+        }
+        assert_eq!(got, vec![br#"{"jsonrpc":"2.0","id":7,"result":"pong"}"#]);
+    }
+
+    #[test]
     fn a_bad_header_is_an_error() {
         let mut buffer = b"Nope: 1\r\n\r\n{}".to_vec();
         assert!(next_frame(&mut buffer).is_err());
@@ -162,13 +262,11 @@ mod tests {
 
     #[test]
     fn parse_pong_and_version() {
-        let (id, result) =
-            parse_response(br#"{"jsonrpc":"2.0","id":1,"result":"pong"}"#).unwrap();
+        let (id, result) = parse_response(br#"{"jsonrpc":"2.0","id":1,"result":"pong"}"#).unwrap();
         assert_eq!(id, 1);
         assert_eq!(result.unwrap(), "pong");
 
-        let (id, result) =
-            parse_response(br#"{"jsonrpc":"2.0","id":2,"result":"0.0.0"}"#).unwrap();
+        let (id, result) = parse_response(br#"{"jsonrpc":"2.0","id":2,"result":"0.0.0"}"#).unwrap();
         assert_eq!(id, 2);
         assert_eq!(result.unwrap(), "0.0.0");
     }
