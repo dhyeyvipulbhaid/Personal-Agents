@@ -23,7 +23,33 @@ let round = 0;
 let paint = 0;
 let optimisticText = "";
 let savedTimer = 0;
-const lockedCards = new Map();
+const lockStore = "pa-approval-locks";
+const lockedCards = loadLocks();
+
+function loadLocks() {
+  try {
+    const parsed = JSON.parse(sessionStorage.getItem(lockStore) || "{}");
+    return new Map(
+      Object.entries(parsed).filter(
+        (entry) => typeof entry[1] === "string" && entry[0].length > 0,
+      ),
+    );
+  } catch {
+    return new Map();
+  }
+}
+
+function storeLocks() {
+  try {
+    const stored = {};
+    for (const [id, text] of lockedCards) {
+      stored[id] = text;
+    }
+    sessionStorage.setItem(lockStore, JSON.stringify(stored));
+  } catch {
+    // The in-memory map still locks this page.
+  }
+}
 
 function normalize(parsed) {
   if (Array.isArray(parsed)) {
@@ -98,6 +124,7 @@ function renderMessages(messages) {
       card.append(text);
       if (settled(message.text)) {
         lockedCards.delete(message.approvalId);
+        storeLocks();
         const line = document.createElement("p");
         line.className = "muted approval-status";
         line.textContent = settledLine(message.text);
@@ -316,6 +343,7 @@ function lockCard(card, statusText) {
   const id = card.dataset.approvalId;
   if (id) {
     lockedCards.set(id, statusText);
+    storeLocks();
   }
   paint += 1;
   for (const node of card.querySelectorAll("button")) {
@@ -334,22 +362,52 @@ function decisionButton(label, id, action, summary) {
   const button = document.createElement("button");
   button.type = "button";
   button.textContent = label;
-  button.addEventListener("click", () => {
-    const card = button.closest("article");
-    const statusText = action === "deny" ? "Denied" : progressLine(summary);
-    if (!card || !lockCard(card, statusText)) {
-      return;
-    }
+  const start = (card) => {
     window.pa
       .invoke("chat_approve", { id, action })
       .then(refresh)
-      .catch((error) => {
+      .catch(() => {
         const status = card.querySelector("[data-status]");
-        if (status) {
-          status.textContent = window.pa.explain(error, "Approval");
+        const held = lockedCards.get(id);
+        if (status && held) {
+          status.textContent = held;
         }
       });
-  });
+  };
+  const run = (event) => {
+    const card = button.closest("article");
+    const statusText = action === "deny" ? "Denied" : progressLine(summary);
+    if (!card) {
+      return;
+    }
+    if (card.dataset.locked === "1") {
+      if (event.type === "click") {
+        for (const node of card.querySelectorAll("button")) {
+          node.remove();
+        }
+      }
+      return;
+    }
+    if (event.type === "mousedown") {
+      card.dataset.locked = "1";
+      lockedCards.set(id, statusText);
+      storeLocks();
+      paint += 1;
+      const status = document.createElement("p");
+      status.className = "muted";
+      status.dataset.status = "1";
+      status.textContent = statusText;
+      card.append(status);
+      start(card);
+      return;
+    }
+    if (!lockCard(card, statusText)) {
+      return;
+    }
+    start(card);
+  };
+  button.addEventListener("mousedown", run);
+  button.addEventListener("click", run);
   return button;
 }
 
@@ -494,8 +552,10 @@ async function submitChat(text) {
   try {
     await window.pa.invoke("chat_send", { text, sessionId: activeId });
   } catch (error) {
-    if (mine === round) {
+    if (mine === round && lockedCards.size === 0) {
       modelError.textContent = window.pa.explain(error, "Chat");
+    } else if (mine === round) {
+      modelError.textContent = "Chrome is still opening that page.";
     }
   } finally {
     clearInterval(poll);
@@ -518,6 +578,12 @@ document.getElementById("composer").addEventListener("submit", (event) => {
     draft.value = "";
   }
   submitChat(text).catch((error) => {
+    if (lockedCards.size > 0) {
+      if (!modelError.textContent) {
+        modelError.textContent = "Chrome is still opening that page.";
+      }
+      return;
+    }
     modelError.textContent = window.pa.explain(error, "Chat");
   });
 });

@@ -55,26 +55,70 @@ export function decodeFrame(
 
 export class FrameBuffer {
   private buffer = new Uint8Array(0);
+  private skip = 0;
+
+  reset(): void {
+    this.buffer = new Uint8Array(0);
+    this.skip = 0;
+  }
 
   push(chunk: Uint8Array): Uint8Array[] {
-    if (chunk.byteLength > 0) {
-      const merged = new Uint8Array(this.buffer.byteLength + chunk.byteLength);
-      merged.set(this.buffer, 0);
-      merged.set(chunk, this.buffer.byteLength);
-      this.buffer = merged;
+    let incoming = chunk;
+    if (this.skip > 0) {
+      const drop = Math.min(this.skip, incoming.byteLength);
+      this.skip -= drop;
+      incoming = incoming.subarray(drop);
     }
-    if (this.buffer.byteLength > MAX_FRAME_BYTES) {
-      throw new Error("frame is too large");
+    if (incoming.byteLength > 0) {
+      const merged = new Uint8Array(
+        this.buffer.byteLength + incoming.byteLength,
+      );
+      merged.set(this.buffer, 0);
+      merged.set(incoming, this.buffer.byteLength);
+      this.buffer = merged;
     }
     const frames: Uint8Array[] = [];
     for (;;) {
-      const decoded = decodeFrame(this.buffer);
+      let decoded: { body: Uint8Array; rest: Uint8Array } | null;
+      try {
+        decoded = decodeFrame(this.buffer);
+      } catch (error) {
+        if (
+          !(error instanceof Error) ||
+          error.message !== "frame is too large"
+        ) {
+          throw error;
+        }
+        if (!this.discardOversized()) {
+          return frames;
+        }
+        continue;
+      }
       if (decoded === null) {
+        if (this.buffer.byteLength > MAX_FRAME_BYTES) {
+          throw new Error("frame is too large");
+        }
         return frames;
       }
       frames.push(Uint8Array.from(decoded.body));
       this.buffer = Uint8Array.from(decoded.rest);
     }
+  }
+
+  /** Drops one oversized frame. False means the rest of its body is still coming. */
+  private discardOversized(): boolean {
+    const headerEnd = indexOfHeaderEnd(this.buffer);
+    const header = new TextDecoder().decode(this.buffer.subarray(0, headerEnd));
+    const length = Number(/^Content-Length: (\d+)$/.exec(header)?.[1] ?? "0");
+    const start = headerEnd + 4;
+    const have = Math.max(0, this.buffer.byteLength - start);
+    if (have >= length) {
+      this.buffer = this.buffer.subarray(start + length);
+      return true;
+    }
+    this.skip = length - have;
+    this.buffer = new Uint8Array(0);
+    return false;
   }
 }
 
@@ -175,7 +219,15 @@ export async function serveStdio(methods: RpcMethods = {}): Promise<void> {
         await Promise.all(pending);
         return;
       }
-      for (const body of frames.push(value)) {
+      let bodies: Uint8Array[] = [];
+      try {
+        bodies = frames.push(value);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "frame error";
+        console.error(message);
+        frames.reset();
+      }
+      for (const body of bodies) {
         pending.push(answer(body, methods));
       }
     }

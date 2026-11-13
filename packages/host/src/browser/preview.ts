@@ -1,5 +1,7 @@
 export const THUMB_QUALITY = 40;
 export const THUMB_WIDTH = 480;
+/** Kept under the 1MB host frame limit, including JSON around the image. */
+export const MAX_THUMB_CHARS = 200_000;
 export const IDLE_MS = 30_000;
 export const SUBSCRIBER_STALE_MS = 2_500;
 
@@ -108,7 +110,7 @@ export class BrowserPreview {
     if (this.streaming) {
       try {
         const frame = await this.source.capture();
-        if (frame.length > 0) {
+        if (frame.length > 0 && frame.length <= MAX_THUMB_CHARS) {
           this.thumbnail = frame;
         }
       } catch {

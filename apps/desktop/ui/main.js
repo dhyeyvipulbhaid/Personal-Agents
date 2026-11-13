@@ -191,6 +191,14 @@ function listCard(title, error, items, action, href, empty) {
 function browserCard() {
   const article = card("Browser activity", "good", "");
   article.id = "browser-activity";
+  if (browserLocked) {
+    const status = document.createElement("p");
+    status.className = "muted";
+    status.id = "browser-status";
+    status.textContent = browserLockedText;
+    article.append(status);
+    return article;
+  }
   const state = browserState;
   if (!state || (!state.active && !state.pendingApproval)) {
     const note = document.createElement("p");
@@ -332,12 +340,7 @@ function decideBrowser(id, action, summary) {
   window.pa
     .invoke("chat_approve", { id, action })
     .then(() => showBrowser())
-    .catch((error) => {
-      browserLocked = "";
-      browserState = {
-        ...(browserState || {}),
-        error: window.pa.explain(error, "Browser"),
-      };
+    .catch(() => {
       renderDashboard();
     });
 }
