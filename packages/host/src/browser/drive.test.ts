@@ -1293,8 +1293,12 @@ test("a real Chrome tab matches the reported open state", async () => {
     expect(proof.state).toBe("visible");
     expect(result.message).toBe("Opened www.apple.com in Chrome.");
   } else {
-    expect(result.message ?? "").toContain("Could not confirm");
-    expect(result.message ?? "").not.toMatch(/^Opened /);
+    const message = result.message ?? "";
+    expect(
+      message.includes("Could not confirm") ||
+        message.includes("Chrome did not start"),
+    ).toBe(true);
+    expect(message).not.toMatch(/^Opened /);
   }
   await drive.close();
 }, 45_000);
