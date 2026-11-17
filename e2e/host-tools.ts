@@ -105,8 +105,15 @@ try {
   if (seen[0]?.model !== "qwen3:8b") {
     throw new Error(`model was ${String(seen[0]?.model)}`);
   }
-  if (!seen[0]?.tools?.some((tool) => tool.function.name === "revenue.read")) {
-    throw new Error("revenue.read was not offered");
+  if (seen.some((request) => request.tools && request.tools.length > 0)) {
+    throw new Error("the model was asked to choose a tool");
+  }
+  if (
+    !seen.some((request) =>
+      request.messages.some((message) => message.content.includes("220")),
+    )
+  ) {
+    throw new Error("revenue.read did not reach the model");
   }
 } finally {
   await browser.close();

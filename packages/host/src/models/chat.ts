@@ -78,7 +78,10 @@ export class ChatSession {
             {
               model,
               messages,
-              tools: tools?.definitions,
+              tools:
+                tools && tools.definitions.length > 0
+                  ? tools.definitions
+                  : undefined,
             },
             onDelta,
             controller.signal,

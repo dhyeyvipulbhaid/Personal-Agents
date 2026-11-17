@@ -126,11 +126,17 @@ try {
   if (after.some((text) => text.includes("browser.open"))) {
     throw new Error(`second card was ${after.join(" | ")}`);
   }
+  if (seen.some((request) => request.tools && request.tools.length > 0)) {
+    throw new Error("the model was asked to choose a tool");
+  }
   if (
-    seen.filter((request) => request.tools && request.tools.length > 0)
-      .length !== 1
+    !seen.some((request) =>
+      request.messages.some((message) =>
+        message.content.includes("Example Domain"),
+      ),
+    )
   ) {
-    throw new Error("tools were offered more than once");
+    throw new Error("the model did not see the page");
   }
   await page.getByRole("button", { name: "Send" }).waitFor();
 } finally {
