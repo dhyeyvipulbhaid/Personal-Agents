@@ -355,10 +355,7 @@ test("a plain question does not offer a browser visit unless the user asks to lo
       seen.at(-1)?.messages.find((message) => message.role === "system")
         ?.content,
     );
-    const names = seen[0]?.tools?.map((tool) => tool.function.name) ?? [];
-    expect(names).toContain("browser.read");
-    expect(names).toContain("browser.navigate");
-    expect(names).toContain("browser.click");
+    expect(seen[0]?.tools).toBeUndefined();
     expect(
       state.messages.filter((message) => message.role === "approval"),
     ).toHaveLength(0);
@@ -477,14 +474,12 @@ test("a chat request sends tools to ollama and runs the tool call", async () => 
       .join("\n");
     expect(reply).toContain("The page title is Example Domain.");
     expect(bodies.at(-1)?.tools).toBeUndefined();
-    const offered = bodies[0]?.tools?.map((tool) => tool.function.name) ?? [];
     expect(bodies[0]?.model).toBe("qwen3:8b");
-    expect(offered).toContain("browser.open");
-    expect(offered).toContain("mail.summary");
-    expectBrowseOnlyWhenAsked(
+    expect(bodies[0]?.tools).toBeUndefined();
+    expect(
       bodies[0]?.messages?.find((message) => message.role === "system")
         ?.content,
-    );
+    ).toContain("It is not open");
     expect(
       bodies.some((body) =>
         body.messages?.some((message) =>
@@ -584,9 +579,7 @@ test("browser.read returns the page text after one approval", async () => {
     if (first.kind !== "approval") {
       throw new Error("the read ended before its approval");
     }
-    expect(seen[0]?.tools?.map((tool) => tool.function.name)).toContain(
-      "browser.read",
-    );
+    expect(seen).toHaveLength(0);
     await methods.approval_act({
       action: "approve",
       id: first.id,
@@ -672,7 +665,7 @@ test("a denied browser.read does not return the page text", async () => {
       messages: { role: string; text: string }[];
     };
     expect(fetches).toBe(0);
-    expect(seen).toHaveLength(1);
+    expect(seen).toHaveLength(0);
     expect(
       state.messages
         .filter((message) => message.role === "assistant")
@@ -947,7 +940,7 @@ test("denying while chat_send is in flight replies without another model call", 
     expect(denied?.error).toBeUndefined();
     const sent = await sendPromise;
     expect(Date.now() - started).toBeLessThan(1000);
-    expect(calls).toBe(1);
+    expect(calls).toBe(0);
     const state = JSON.parse(String(sent?.result)) as {
       streaming: boolean;
       messages: { role: string; text: string }[];
@@ -958,7 +951,7 @@ test("denying while chat_send is in flight replies without another model call", 
         .filter((message) => message.role === "assistant")
         .map((message) => message.text)
         .join("\n"),
-    ).toBe("Not allowed: I didn't open www.wikipedia.org.");
+    ).toBe("Not allowed: I didn't open wikipedia.org.");
     expect(
       state.messages.some((message) => message.text.includes("(denied)")),
     ).toBe(true);
@@ -986,11 +979,11 @@ test("a revenue question uses the agent tools and answers 220", async () => {
       await methods.chat_send({ text: "What's the total in revenue.csv?" }),
     ) as { messages: { role: string; text: string }[] };
     expect(seen[0]?.model).toBe("qwen3:8b");
-    expect(seen[0]?.tools?.map((tool) => tool.function.name)).toContain(
-      "revenue.read",
-    );
+    expect(seen[0]?.tools).toBeUndefined();
     expect(
-      seen[1]?.messages.some((message) => message.content.includes("220")),
+      seen.some((request) =>
+        request.messages.some((message) => message.content.includes("220")),
+      ),
     ).toBe(true);
     const reply = state.messages.find(
       (message) => message.role === "assistant",
@@ -1343,6 +1336,112 @@ test("opening a site again navigates instead of repeating an earlier description
     expect(replies.some((message) => message.text.includes("iPhone"))).toBe(
       false,
     );
+  } finally {
+    app.close();
+  }
+});
+
+test("summarising a paper reads that exact page and does not open Chrome", async () => {
+  const urls: string[] = [];
+  const fetched: string[] = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const target = String(input);
+    if (target.includes("arxiv.org")) {
+      fetched.push(target);
+      return new Response(
+        "<title>Paper</title><main><p>The method trains a small local router.</p></main>",
+      );
+    }
+    return originalFetch(input);
+  }) as typeof fetch;
+  const app = new DesktopApp({
+    dataDir: mkdtempSync(join(tmpdir(), "pa-paper-read-")),
+    adapter: {
+      async listModels() {
+        return [];
+      },
+      async chat(request) {
+        if (request.tools && request.tools.length > 0) {
+          return {
+            text: "",
+            toolCall: {
+              name: "browser.navigate",
+              arguments: JSON.stringify({ url: "https://arxiv.org" }),
+            },
+          };
+        }
+        const packet = request.messages
+          .map((message) => message.content)
+          .join("\n");
+        if (packet.includes("small local router")) {
+          return { text: "The paper describes a small local router." };
+        }
+        return { text: "Opened arxiv.org in Chrome." };
+      },
+      async structured<T>(): Promise<T> {
+        return {} as T;
+      },
+    },
+    probe: async () => "running",
+    memoryExtractor: createFakeExtractor(() => []),
+    chromePath: "chrome",
+    browserConnect: async () => pageClient(urls),
+  });
+  await app.start();
+  const methods = app.methods();
+  try {
+    const state = await approvedSend(
+      methods,
+      "summarise this paper https://arxiv.org/abs/2609.09153",
+    );
+    expect(urls).toEqual([]);
+    expect(fetched.some((url) => url.includes("/abs/2609.09153"))).toBe(true);
+    const reply =
+      state.messages.filter((message) => message.role === "assistant").at(-1)
+        ?.text ?? "";
+    expect(reply).toContain("small local router");
+    expect(reply).toContain("https://arxiv.org/abs/2609.09153");
+    expect(reply).not.toContain("Opened");
+    expect(reply).not.toContain("Chrome");
+  } finally {
+    globalThis.fetch = originalFetch;
+    app.close();
+  }
+});
+
+test("opening a full URL keeps the path", async () => {
+  const urls: string[] = [];
+  const app = new DesktopApp({
+    dataDir: mkdtempSync(join(tmpdir(), "pa-open-path-")),
+    adapter: {
+      async listModels() {
+        return [];
+      },
+      async chat() {
+        return { text: "Opened." };
+      },
+      async structured<T>(): Promise<T> {
+        return {} as T;
+      },
+    },
+    probe: async () => "running",
+    memoryExtractor: createFakeExtractor(() => []),
+    chromePath: "chrome",
+    browserConnect: async () => pageClient(urls),
+  });
+  await app.start();
+  const methods = app.methods();
+  try {
+    const state = await approvedSend(
+      methods,
+      "open https://arxiv.org/abs/2609.09153?utm=1",
+    );
+    expect(urls).toEqual(["https://arxiv.org/abs/2609.09153?utm=1"]);
+    expect(
+      state.messages.filter((message) => message.role === "assistant").at(-1)
+        ?.text,
+    ).toBe("Opened arxiv.org in Chrome.");
   } finally {
     app.close();
   }

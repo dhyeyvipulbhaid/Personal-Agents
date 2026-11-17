@@ -26,6 +26,7 @@ import {
 import { type DemoPaths, seedDemoData } from "./data/demo.ts";
 import { loadRevenueView, type RevenueView } from "./files/snapshot.ts";
 import type { RevenueRow } from "./files/table.ts";
+import { type IntentRoute, type IntentTool, routeIntent } from "./intent.ts";
 import {
   followUps,
   loadMailbox,
@@ -655,10 +656,9 @@ export class DesktopApp {
       session.title = text.trim().slice(0, 48);
     }
     const recalled = await this.recallFacts(text);
-    const kind = localQuestion(text);
-    const direct = directBrowse(text);
-    if (direct?.trust) {
-      this.browser.trust(direct.url);
+    const route = routeIntent(text);
+    if (route.trust && route.arguments.url) {
+      this.browser.trust(route.arguments.url);
     }
     const approvalsBefore = session.chat.messages.filter(
       (message) => message.role === "approval",
@@ -672,17 +672,20 @@ export class DesktopApp {
     let completed = false;
     try {
       await session.chat.send(text, context, {
-        model: kind ? this.settings.get("agent") : this.settings.get("chat"),
-        definitions: LOCAL_TOOLS,
+        model: localTool(route.tool)
+          ? this.settings.get("agent")
+          : this.settings.get("chat"),
+        definitions: definitionsFor(route),
         runTool: (call, signal) => this.runLocalTool(call, signal),
-        forced: direct
-          ? {
-              name: direct.read ? "browser.read" : "browser.navigate",
-              arguments: JSON.stringify({ url: direct.url }),
-            }
-          : undefined,
+        forced:
+          route.mode === "force" && route.tool
+            ? {
+                name: route.tool,
+                arguments: JSON.stringify(route.arguments),
+              }
+            : undefined,
       });
-      if (asksLivePage(text) && !direct?.read) {
+      if (route.pageQuestion && route.mode !== "force") {
         const browsed =
           session.chat.messages.filter((message) => message.role === "approval")
             .length > approvalsBefore;
@@ -705,7 +708,7 @@ export class DesktopApp {
         session.streaming = false;
       }
     }
-    if (kind === "revenue") {
+    if (route.tool === "revenue.read" && route.mode === "force") {
       this.groundRevenue(session);
     }
     if (completed) {
@@ -1282,67 +1285,22 @@ const LOCAL_TOOLS: ToolDefinition[] = [
   },
 ];
 
-function directBrowse(
-  text: string,
-): { url: string; read: boolean; trust: boolean } | null {
-  const trimmed = text.trim();
-  const read = /^(?:please\s+)?read\s+(\S+)\s*$/i.exec(trimmed);
-  if (read) {
-    const url = siteUrl(read[1] ?? "");
-    if (url) {
-      return { url, read: true, trust: true };
-    }
-  }
-  const open = /^(?:please\s+)?(?:open|visit|go to)\s+(\S+)\s*$/i.exec(trimmed);
-  if (open) {
-    const url = siteUrl(open[1] ?? "");
-    if (url) {
-      return { url, read: false, trust: false };
-    }
-  }
-  if (!asksLivePage(trimmed)) {
-    return null;
-  }
-  const url = siteUrl(trimmed);
-  return url ? { url, read: true, trust: false } : null;
-}
-
-function asksLivePage(text: string): boolean {
+function localTool(tool: IntentTool | null): boolean {
   return (
-    /\b(?:what(?:'s| is) on|what does|what(?:'s| is) (?:the )?(?:latest|current))\b/i.test(
-      text,
-    ) && /\b(?:page|site|website|homepage)\b/i.test(text)
+    tool === "revenue.read" ||
+    tool === "mail.summary" ||
+    tool === "memory.recall"
   );
 }
 
-function siteUrl(raw: string): string | null {
-  const cleaned = raw.replace(/[.,?!]+$/g, "");
-  const match = /((?:[a-z0-9-]+\.)+[a-z]{2,})(?:\/\S*)?/i.exec(cleaned);
-  const host = match?.[1] ?? "";
-  if (host.length < 4 || !host.includes(".")) {
-    return null;
+function definitionsFor(route: IntentRoute): ToolDefinition[] {
+  if (route.mode === "none") {
+    return [];
   }
-  return `https://${host}`;
-}
-
-function localQuestion(text: string): "revenue" | "mail" | "memory" | null {
-  const question = text.trim().toLowerCase();
-  const asking =
-    question.endsWith("?") ||
-    /^(what|how|show|list|which|where)\b/.test(question);
-  if (!asking) {
-    return null;
+  if ((route.mode === "narrow" || route.mode === "force") && route.tool) {
+    return LOCAL_TOOLS.filter((item) => item.function.name === route.tool);
   }
-  if (/revenue\.csv|\brevenue\b/.test(question)) {
-    return "revenue";
-  }
-  if (/\b(mail|inbox|digest|follow-ups?)\b/.test(question)) {
-    return "mail";
-  }
-  if (/\b(memory|remembered|saved facts?)\b/.test(question)) {
-    return "memory";
-  }
-  return null;
+  return LOCAL_TOOLS;
 }
 
 function toolPrompt(): string {

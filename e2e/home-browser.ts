@@ -186,7 +186,7 @@ try {
   if ((await page.getByRole("button", { name: "Stop" }).count()) !== 0) {
     throw new Error("Stop stayed after navigate finished");
   }
-  if (calls < 2) {
+  if (calls < 1) {
     throw new Error("the model was not asked to navigate");
   }
 
